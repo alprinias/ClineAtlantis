@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vue 3 GitHub Pages Mock</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app" class="page-shell">
+    <header class="hero">
+      <h1>{{ title }}</h1>
+      <p class="subtitle">{{ subtitle }}</p>
+    </header>
+
+    <main class="content-card">
+      <section class="panel">
+        <h2>Live Preview</h2>
+        <p>Use the buttons to update the mock state and see Vue reactivity in action.</p>
+
+        <div class="status-box">
+          <div><strong>Status:</strong> {{ status }}</div>
+          <div><strong>Count:</strong> {{ count }}</div>
+        </div>
+
+        <div class="button-row">
+          <button @click="toggleStatus">Toggle Status</button>
+          <button @click="increment">Increment</button>
+          <button @click="reset">Reset</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Editable Fields</h2>
+        <label>
+          App title
+          <input v-model="title" placeholder="Change the title" />
+        </label>
+
+        <label>
+          Description
+          <textarea v-model="subtitle" rows="3" placeholder="Change the subtitle"></textarea>
+        </label>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

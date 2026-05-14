@@ -1,0 +1,9 @@
+# Ignore system files and editors
+.DS_Store
+Thumbs.db
+
+# Node artifacts (not used in this demo, but safe to ignore)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

@@ -70,6 +70,31 @@ body {
   background: #cbd5e1;
 }
 
+.menu-button {
+  width: 100%;
+  display: block;
+  text-align: left;
+  padding: 0.75rem 0.85rem;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #1e293b;
+  font-size: 0.98rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.menu-button:hover,
+.menu-button:focus {
+  background: #cbd5e1;
+}
+
+.menu-button.subitem {
+  margin-left: 1rem;
+  background: #dbe6f0;
+}
+
 .content {
   margin-left: 250px; /* Space for sidebar */
   padding: 2rem;

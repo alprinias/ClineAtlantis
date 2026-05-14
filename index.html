@@ -21,18 +21,20 @@
       <!-- Left Sidebar Menu -->
       <aside class="sidebar">
         <div class="menu-category">
-          <h3>Admin</h3>
+          <button class="menu-button" @click="setView('AdminView')">Admin</button>
         </div>
         <div class="menu-category">
-          <h3>Recruitment</h3>
+          <button class="menu-button" @click="setView('RecruitmentView')">Recruitment</button>
         </div>
         <div class="menu-category">
-          <h3>Operations</h3>
+          <button class="menu-button" @click="setView('OperationsView')">Operations</button>
+          <button class="menu-button subitem" @click="setView('RotationPlanView')">Rotation Plan</button>
         </div>
       </aside>
 
       <!-- Main Content Area -->
       <main class="content">
+        <component v-if="currentViewComponent" :is="currentViewComponent"></component>
       </main>
     </div>
 

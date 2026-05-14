@@ -13,7 +13,10 @@ This is a Vue 3 Single Page Application (SPA) mock for Crossworld Marine, featur
 
 - `index.html` — Main HTML layout
 - `styles.css` — Styling with fixed header/footer, scrollable content
-- `app.js` — Vue 3 app (minimal for now)
+- `app.js` — Vue 3 app with component imports
+- `components/` — separate Vue component files
+- `components/*.md` — component documentation
+- `application.md` — project-level application instructions
 
 ## Run locally
 

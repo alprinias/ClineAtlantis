@@ -1,22 +1,32 @@
-# Vue 3 GitHub Pages Mock
+# Crossworld Marine Mock Application
 
-This is a simple Vue 3 mock app built with separate HTML, CSS, and JavaScript files.
+This is a Vue 3 Single Page Application (SPA) mock for Crossworld Marine, featuring a fixed header, footer, and left sidebar menu with 3 main categories.
 
-## Files
+## Features
 
-- `index.html` — main page with Vue markup
-- `styles.css` — page styling
-- `app.js` — Vue 3 app logic using the browser module build
+- **Fixed Header**: Always visible at the top with Crossworld Marine logo
+- **Fixed Footer**: Always visible at the bottom with social links
+- **Left Sidebar**: Menu with 3 categories (Admin, Recruitment, Operations) - sub-items to be added later
+- **Scrollable Content Area**: Empty right pane, ready for dynamic content
+
+## Structure
+
+- `index.html` — Main HTML layout
+- `styles.css` — Styling with fixed header/footer, scrollable content
+- `app.js` — Vue 3 app (minimal for now)
 
 ## Run locally
 
-Open `index.html` in your browser, or use a simple static server like `Live Server` in VS Code.
+Open `index.html` in your browser.
 
 ## Deploy to GitHub Pages
 
-1. Create a GitHub repository.
-2. Push these files to the repository.
-3. In repository `Settings` → `Pages`, choose the `main` branch and `/root` folder.
-4. Save and wait a minute for deployment.
+Live at: https://alprinias.github.io/ClineAtlantis/
 
-Your site will be available at `https://<your-username>.github.io/<repo-name>/`.
+To update: Commit and push changes.
+
+## Notes
+
+- Header and footer are fixed; only content scrolls
+- Sidebar categories are placeholders for hierarchical menus
+- Content pane is empty, ready for views

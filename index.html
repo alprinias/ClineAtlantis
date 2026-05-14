@@ -3,46 +3,51 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Vue 3 GitHub Pages Mock</title>
+  <title>Crossworld Marine Mock App</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div id="app" class="page-shell">
-    <header class="hero">
-      <h1>{{ title }}</h1>
-      <p class="subtitle">{{ subtitle }}</p>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-content">
+        <div class="logo">
+          <span class="logo-text">Crossworld Marine</span>
+        </div>
+      </div>
     </header>
 
-    <main class="content-card">
-      <section class="panel">
-        <h2>Live Preview</h2>
-        <p>Use the buttons to update the mock state and see Vue reactivity in action.</p>
-
-        <div class="status-box">
-          <div><strong>Status:</strong> {{ status }}</div>
-          <div><strong>Count:</strong> {{ count }}</div>
+    <div class="main-layout">
+      <!-- Left Sidebar Menu -->
+      <aside class="sidebar">
+        <div class="menu-category">
+          <h3>Admin</h3>
         </div>
-
-        <div class="button-row">
-          <button @click="toggleStatus">Toggle Status</button>
-          <button @click="increment">Increment</button>
-          <button @click="reset">Reset</button>
+        <div class="menu-category">
+          <h3>Recruitment</h3>
         </div>
-      </section>
+        <div class="menu-category">
+          <h3>Operations</h3>
+        </div>
+      </aside>
 
-      <section class="panel">
-        <h2>Editable Fields</h2>
-        <label>
-          App title
-          <input v-model="title" placeholder="Change the title" />
-        </label>
+      <!-- Main Content Area -->
+      <main class="content">
+      </main>
+    </div>
 
-        <label>
-          Description
-          <textarea v-model="subtitle" rows="3" placeholder="Change the subtitle"></textarea>
-        </label>
-      </section>
-    </main>
+    <!-- Footer -->
+    <footer class="footer">
+      <div class="footer-content">
+        <p>&copy; Crossworld 2025. All rights reserved.</p>
+        <div class="social-links">
+          <a href="https://www.instagram.com/crossworldmarine">Instagram</a>
+          <a href="https://www.facebook.com/crossworldmarineservicesinc">Facebook</a>
+          <a href="https://www.linkedin.com/company/crossworld-marine/">LinkedIn</a>
+          <a href="https://www.youtube.com/@Crossworldmarine">YouTube</a>
+        </div>
+      </div>
+    </footer>
   </div>
 
   <script type="module" src="app.js"></script>

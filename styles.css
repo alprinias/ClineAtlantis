@@ -37,18 +37,18 @@ body {
 }
 
 .main-layout {
-  display: flex;
-  margin-top: 80px; /* Header height */
-  margin-bottom: 60px; /* Footer height */
-  min-height: calc(100vh - 140px);
+  display: block; /* Changed from flex */
 }
 
 .sidebar {
+  position: fixed;
+  left: 0;
+  top: 80px; /* Below header */
   width: 250px;
   background: #e2e8f0;
   padding: 1rem;
   box-shadow: 2px 0 4px rgba(0,0,0,0.1);
-  height: calc(100vh - 80px - 60px);
+  height: calc(100vh - 140px);
   overflow-y: hidden;
 }
 
@@ -71,7 +71,7 @@ body {
 }
 
 .content {
-  flex: 1;
+  margin-left: 250px; /* Space for sidebar */
   padding: 2rem;
   background: white;
   height: calc(100vh - 140px);

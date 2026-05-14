@@ -13,12 +13,17 @@ const app = {
   },
   data() {
     return {
-      currentView: '',
+      currentView: 'RotationPlanView',
     }
   },
   computed: {
     currentViewComponent() {
-      return this.currentView || null
+      return {
+        AdminView,
+        RecruitmentView,
+        OperationsView,
+        RotationPlanView,
+      }[this.currentView] || null
     },
   },
   methods: {

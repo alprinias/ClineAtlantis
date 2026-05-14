@@ -1,0 +1,2064 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manning ERP v2.4 - Fleet Rotation</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .active-tab { border-bottom: 3px solid #2563eb; color: #2563eb; font-weight: bold; }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+
+        .gantt-bar {
+            position: absolute;
+            border-radius: 3px;
+            cursor: pointer;
+            overflow: hidden;
+            transition: filter 0.12s, box-shadow 0.12s;
+        }
+        .gantt-bar:hover { filter: brightness(0.88); box-shadow: 0 1px 8px rgba(0,0,0,0.2); z-index: 10; }
+
+        /* ── Vertical zones in a 62px rank-row ─────────────────────────
+           TOP    top:3%  height:22%  z-index:4  →  RFS / RFR-signoff
+           MIDDLE top:28% height:44%  z-index:2  →  onboard service bar
+           BOTTOM top:76% height:22%  z-index:3  →  RFE / RFR-embark / RFX / RFP
+        ──────────────────────────────────────────────────────────────── */
+
+        /* Service bars */
+        .bar-onboard       { top:28%; height:44%; z-index:2; background:#5b7fbd; border:1.5px solid #4a6da8; }
+        .bar-future-service{ top:28%; height:44%; z-index:2; background:#93b8d8; border:1.5px solid #7aaac8; }
+
+        /* Signoff adjustment overlays */
+        .bar-signoff-early {
+            top:28%; height:44%; border-radius:0 3px 3px 0; z-index:5;
+            background:repeating-linear-gradient(135deg,rgba(220,38,38,0.18) 0px,rgba(220,38,38,0.18) 4px,rgba(254,202,202,0.35) 4px,rgba(254,202,202,0.35) 8px);
+            border-top:1.5px dashed #f87171; border-bottom:1.5px dashed #f87171; border-right:2px solid #ef4444;
+        }
+        .bar-signoff-late {
+            top:28%; height:44%; border-radius:0 3px 3px 0; z-index:5;
+            background:#bbf7d0; border-top:1.5px solid #4ade80; border-bottom:1.5px solid #4ade80; border-right:2px solid #22c55e;
+        }
+
+        /* ── Unified RFA thin bars ───────────────────────────────────────
+           Position classes (applied by zone):
+             .rfa-top    → top zone    (RFS, RFR sign-off side)
+             .rfa-bottom → bottom zone (RFE, RFR embark side, RFX, RFP)
+
+           Colour classes (one per type):
+             .rfa-rfs  rose    #f43f5e
+             .rfa-rfr  amber   #f59e0b
+             .rfa-rfe  sky     #0ea5e9
+             .rfa-rfp  purple  #a855f7
+             .rfa-rfx  teal    #14b8a6
+
+           Status texture classes (::after overlay):
+             .rfa-active      → solid (no overlay)
+             .rfa-approval    → diagonal white stripes
+             .rfa-preparation → white dot grid
+             .rfa-completed   → desaturated
+        ──────────────────────────────────────────────────────────────── */
+
+        .rfa-top    { top:3%;  height:22%; z-index:4; border-radius:2px; }
+        .rfa-bottom { top:76%; height:22%; z-index:3; border-radius:2px; }
+
+        /* Type colours */
+        .rfa-rfs { background:#fda4af; border:1px solid #f43f5e; }   /* rose   */
+        .rfa-rfr { background:#fcd34d; border:1px solid #f59e0b; }   /* amber  */
+        .rfa-rfe { background:#7dd3fc; border:1px solid #0ea5e9; }   /* sky    */
+        .rfa-rfp { background:#d8b4fe; border:1px solid #a855f7; }   /* purple */
+        .rfa-rfx { background:#5eead4; border:1px solid #14b8a6; }   /* teal   */
+
+        /* Status textures via ::after pseudo-element */
+        .rfa-approval::after, .rfa-preparation::after {
+            content:''; position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+        }
+        .rfa-approval::after {
+            background: repeating-linear-gradient(
+                135deg,
+                rgba(255,255,255,0) 0px, rgba(255,255,255,0) 3px,
+                rgba(255,255,255,0.55) 3px, rgba(255,255,255,0.55) 5px,
+                rgba(255,255,255,0) 5px, rgba(255,255,255,0) 10px
+            );
+        }
+        .rfa-preparation::after {
+            background: radial-gradient(circle, rgba(255,255,255,0.7) 1.5px, transparent 1.5px);
+            background-size: 6px 6px;
+        }
+        .rfa-completed { filter: saturate(0.3) brightness(1.15); }
+
+        .bar-label {
+            position: absolute; inset: 0;
+            display: flex; align-items: center;
+            padding: 0 6px;
+            font-size: 9px; font-weight: 700;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            pointer-events: none; letter-spacing: 0.01em;
+        }
+
+        .tt {
+            display: none; position: fixed; z-index: 300;
+            background: #0f172a; color: white;
+            font-size: 11px; padding: 10px 14px; border-radius: 7px;
+            pointer-events: none; min-width: 230px; max-width: 290px;
+            box-shadow: 0 10px 32px rgba(0,0,0,0.55);
+        }
+        .tt.show { display: block; }
+
+        .today-line  { position:absolute; top:0; bottom:0; width:2px; background:#16a34a; z-index:20; pointer-events:none; box-shadow:0 0 4px rgba(22,163,74,0.4); }
+        .today-label { position:absolute; top:3px; font-size:9px; font-weight:800; color:#15803d;
+                       transform:translateX(-50%); white-space:nowrap; z-index:21; pointer-events:none; }
+        .rfa-horizon-line  { position:absolute; top:0; bottom:0; width:2px; background:#d97706; z-index:19; pointer-events:none; box-shadow:0 0 4px rgba(217,119,6,0.4); }
+        .rfa-horizon-label { position:absolute; top:3px; font-size:9px; font-weight:800; color:#b45309;
+                             transform:translateX(-50%); white-space:nowrap; z-index:20; pointer-events:none; }
+
+        .rank-row { border-bottom:1px solid #e5e7eb; height:62px; overflow:visible; }
+        .rank-row:last-child { border-bottom:none; }
+        .rfe-row  { border-bottom:1px solid #e5e7eb; height:50px; overflow:visible; background:#f8faff; }
+
+        /* Signoff adjustment overlay — same vertical zone as .bar-onboard (top:28% height:44%) */
+        /* Early signoff: hatched red overlay covers the REMOVED portion */
+        .bar-signoff-early {
+            top:28%; height:44%; border-radius:0 3px 3px 0; z-index:5;
+            background: repeating-linear-gradient(
+                135deg,
+                rgba(220,38,38,0.18) 0px, rgba(220,38,38,0.18) 4px,
+                rgba(254,202,202,0.35) 4px, rgba(254,202,202,0.35) 8px
+            );
+            border-top: 1.5px dashed #f87171;
+            border-bottom: 1.5px dashed #f87171;
+            border-right: 2px solid #ef4444;
+        }
+        /* Late signoff: solid pale green extension covers the ADDED portion */
+        .bar-signoff-late {
+            top:28%; height:44%; border-radius:0 3px 3px 0; z-index:5;
+            background: #bbf7d0;
+            border-top: 1.5px solid #4ade80;
+            border-bottom: 1.5px solid #4ade80;
+            border-right: 2px solid #22c55e;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 font-sans text-gray-800">
+<div id="app" class="h-screen flex flex-col overflow-hidden">
+
+    <!-- Header -->
+    <header class="bg-slate-900 text-white p-3 flex justify-between items-center px-8 shrink-0">
+        <h1 class="text-lg font-bold tracking-tight">MARITIME<span class="text-blue-400">ERP</span>
+            <span class="text-xs font-normal ml-2 opacity-70">Fleet Rotation — All Vessels</span></h1>
+        <div class="flex items-center space-x-4 text-sm">
+            <a href="mockOperations8.html" class="text-blue-300 hover:text-blue-100 text-xs underline">← Ops Module</a>
+            <a href="mockRotation1.html" class="text-blue-300 hover:text-blue-100 text-xs underline">Per-Vessel View</a>
+            <span>Welcome, <strong>Ops_User_01</strong></span>
+            <div class="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold">JD</div>
+        </div>
+    </header>
+
+    <!-- Sub-nav -->
+    <nav class="bg-white border-b flex px-8 shadow-sm shrink-0">
+        <button class="active-tab py-3 px-1 text-sm">ALL VESSELS — ROTATION PLAN</button>
+    </nav>
+
+    <!-- Filter bar -->
+    <div class="bg-white border-b px-8 py-3 flex items-center gap-4 shrink-0 flex-wrap">
+        <div class="flex items-center gap-2">
+            <label class="text-[10px] font-black text-gray-400 uppercase tracking-widest">Client</label>
+            <select v-model="filterClient" @change="filterVessel=''"
+                    class="text-sm border rounded px-3 py-1.5 bg-white min-w-[160px]">
+                <option value="">All Clients</option>
+                <option v-for="c in allClients" :value="c">{{ c }}</option>
+            </select>
+        </div>
+        <div class="flex items-center gap-2">
+            <label class="text-[10px] font-black text-gray-400 uppercase tracking-widest">Vessel</label>
+            <select v-model="filterVessel" :disabled="!filterClient"
+                    class="text-sm border rounded px-3 py-1.5 bg-white min-w-[180px] disabled:opacity-50">
+                <option value="">{{ filterClient ? 'All Vessels' : '— select client first —' }}</option>
+                <option v-for="v in clientVessels" :value="v.id">{{ v.name }}</option>
+            </select>
+        </div>
+        <div class="flex items-center gap-2">
+            <label class="text-[10px] font-black text-gray-400 uppercase tracking-widest">Rank</label>
+            <select v-model="filterRank"
+                    class="text-sm border rounded px-3 py-1.5 bg-white min-w-[160px]">
+                <option value="">All Ranks</option>
+                <option v-for="r in allRanks" :value="r">{{ r }}</option>
+            </select>
+        </div>
+        <div class="flex items-center gap-2">
+            <label class="text-[10px] font-black text-gray-400 uppercase tracking-widest">RF Type</label>
+            <div class="flex rounded border overflow-hidden text-xs">
+                <button v-for="t in [{v:'',l:'All'},{v:'any',l:'Any RF'},{v:'rfs',l:'RFS'},{v:'rfr',l:'RFR'},{v:'rfe',l:'RFE'},{v:'rfp',l:'RFP'},{v:'rfx',l:'RFX'}]"
+                        :key="t.v" @click="filterRfType = t.v"
+                        :class="['px-2.5 py-1.5 font-bold border-r last:border-r-0 transition text-[10px]',
+                                 filterRfType === t.v
+                                   ? rfTypeActiveClass(t.v)
+                                   : 'bg-white text-gray-400 hover:bg-gray-50']">
+                    {{ t.l }}
+                </button>
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <label class="text-[10px] font-black text-gray-400 uppercase tracking-widest">Window</label>
+            <div class="flex rounded border overflow-hidden text-xs">
+                <button v-for="m in [6,12,18]" :key="m" @click="viewMonths=m"
+                        :class="['px-3 py-1.5 font-semibold border-r last:border-r-0 transition',
+                                 viewMonths===m ? 'bg-slate-800 text-white' : 'bg-white text-gray-500 hover:bg-gray-50']">
+                    {{ m }} mo
+                </button>
+            </div>
+        </div>
+        <label class="flex items-center gap-2 cursor-pointer select-none">
+            <input type="checkbox" v-model="includeRatings" class="w-4 h-4 rounded accent-blue-600">
+            <span class="text-xs font-semibold text-gray-600">Include Ratings</span>
+        </label>
+        <div class="flex items-center gap-2">
+            <label class="text-[10px] font-black text-gray-400 uppercase tracking-widest">From</label>
+            <input type="date" v-model="ganttStartStr"
+                   class="text-sm border rounded px-3 py-1.5 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400">
+            <button @click="resetGanttStart"
+                    title="Reset to default (3 months before today)"
+                    class="text-[10px] px-2 py-1.5 rounded border bg-white text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition">↺</button>
+        </div>
+        <div class="ml-auto flex items-center gap-4 text-[10px] text-gray-500 flex-wrap justify-end">
+            <!-- Type legend -->
+            <div class="flex items-center gap-2.5">
+                <span class="text-[9px] font-black uppercase text-gray-300 tracking-widest mr-1">Type</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-8 h-2.5 rounded-sm" style="background:#fda4af;border:1px solid #f43f5e"></span>RFS</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-8 h-2.5 rounded-sm" style="background:#fcd34d;border:1px solid #f59e0b"></span>RFR</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-8 h-2.5 rounded-sm" style="background:#7dd3fc;border:1px solid #0ea5e9"></span>RFE</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-8 h-2.5 rounded-sm" style="background:#d8b4fe;border:1px solid #a855f7"></span>RFP</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-8 h-2.5 rounded-sm" style="background:#5eead4;border:1px solid #14b8a6"></span>RFX</span>
+            </div>
+            <!-- Status legend -->
+            <div class="flex items-center gap-2.5">
+                <span class="text-[9px] font-black uppercase text-gray-300 tracking-widest mr-1">Status</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-8 h-2.5 rounded-sm" style="background:#7dd3fc;border:1px solid #0ea5e9"></span>Active</span>
+                <span class="flex items-center gap-1">
+                    <span class="inline-block w-8 h-2.5 rounded-sm" style="background:#7dd3fc;border:1px solid #0ea5e9;background-image:repeating-linear-gradient(135deg,transparent 0px,transparent 3px,rgba(255,255,255,0.6) 3px,rgba(255,255,255,0.6) 5px,transparent 5px,transparent 10px)"></span>Approval
+                </span>
+                <span class="flex items-center gap-1">
+                    <span class="inline-block w-8 h-2.5 rounded-sm" style="background:#7dd3fc;border:1px solid #0ea5e9;background-image:radial-gradient(circle,rgba(255,255,255,0.7) 1.5px,transparent 1.5px);background-size:5px 5px"></span>Preparation
+                </span>
+                <span class="flex items-center gap-1"><span class="inline-block w-8 h-2.5 rounded-sm" style="background:#b2d8d0;border:1px solid #8bb5ae;filter:saturate(0.3)"></span>Completed</span>
+            </div>
+            <!-- Reference lines -->
+            <div class="flex items-center gap-2.5">
+                <span class="flex items-center gap-1"><span class="inline-block w-2 h-3 rounded-sm" style="background:#16a34a"></span>Today</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-2 h-3 rounded-sm" style="background:#d97706"></span>+2mo horizon</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Single chart -->
+    <main class="flex-1 overflow-auto">
+        <div class="overflow-x-auto">
+            <div :style="{ minWidth: (rankColWidth + ganttTotalDays * dayWidth) + 'px' }">
+
+                <!-- Sticky month ruler -->
+                <div class="flex border-b bg-slate-100 sticky top-0 z-30" :style="{ paddingLeft: rankColWidth + 'px' }">
+                    <div v-for="m in ganttMonths" :key="m.key"
+                         class="shrink-0 text-center text-[10px] font-bold text-gray-400 uppercase border-r py-1.5 tracking-wide"
+                         :style="{ width: (m.days * dayWidth) + 'px' }">
+                        {{ m.label }}
+                    </div>
+                </div>
+
+                <!-- All rows across all vessels -->
+                <template v-for="vessel in allFlatRows" :key="vessel.vesselId">
+
+                    <!-- Vessel group header row -->
+                    <div class="flex border-b bg-slate-700 text-white"
+                         style="height:32px;">
+                        <div class="shrink-0 flex items-center px-3 gap-3 justify-between"
+                             :style="{ width: rankColWidth + 'px' }">
+                            <div class="flex items-center gap-2 min-w-0">
+                                <span class="text-[10px] font-black uppercase tracking-wide text-slate-200 truncate">{{ vessel.client }}</span>
+                                <span class="text-[10px] text-slate-500">·</span>
+                                <span class="text-[10px] font-semibold text-slate-300 truncate">{{ vessel.name }}</span>
+                                <span class="text-[9px] text-slate-500 shrink-0">{{ vessel.type }}</span>
+                            </div>
+                            <button @click.stop="openModal('Embark', vessel, null)"
+                                    class="shrink-0 text-[9px] font-bold px-2 py-0.5 rounded bg-blue-500 text-white hover:bg-blue-400 transition leading-none">
+                                + Embark
+                            </button>
+                        </div>
+                        <div class="flex-1 bg-slate-700"></div>
+                    </div>
+
+                    <!-- Rank rows for this vessel -->
+                    <div v-for="row in vessel.ranks" :key="vessel.vesselId + '-' + row.rank"
+                         class="rank-row flex">
+
+                        <!-- Label column: rank only -->
+                        <div class="shrink-0 flex items-center px-3 border-r"
+                             :class="row.isRating ? 'bg-slate-50' : 'bg-gray-50'"
+                             :style="{ width: rankColWidth + 'px' }">
+                            <div class="text-[10px] font-black uppercase leading-tight truncate"
+                                 :class="row.isRating ? 'text-slate-400' : 'text-slate-700'">{{ row.rank }}</div>
+                        </div>
+
+                        <!-- Chart zone -->
+                        <div class="flex-1 relative" style="overflow:visible">
+
+                            <!-- Month gridlines -->
+                            <div v-for="m in ganttMonths" :key="'g'+m.key"
+                                 class="absolute inset-y-0 border-r border-gray-100 pointer-events-none"
+                                 :style="{ left: (m.offsetDays * dayWidth) + 'px' }">
+                            </div>
+
+                            <!-- Today line -->
+                            <div class="today-line" :style="{ left: (todayOffset * dayWidth) + 'px' }"></div>
+                            <!-- RFA horizon line -->
+                            <div class="rfa-horizon-line" :style="{ left: (rfaHorizonOffset * dayWidth) + 'px' }"></div>
+
+                            <!-- ONBOARD bar — right-click opens context menu -->
+                            <div class="gantt-bar bar-onboard"
+                                 :style="barStyle(row.onboard.embark, row.onboard.signoff)"
+                                 :data-vessel-id="vessel.vesselId"
+                                 :data-rank="row.rank"
+                                 @contextmenu.prevent.stop="openContextMenu($event, vessel, row)">
+                                <div class="bar-label" style="color:white;pointer-events:none">{{ row.onboard.shortName }}</div>
+                            </div>
+
+                            <!-- Signoff adjustment overlay: shown when RFS signoffDate ≠ original signoff -->
+                            <template v-if="row.rfs && row.rfs.signoffDate !== row.onboard.signoff">
+                                <!-- EARLY: RFS date < original → hatch from rfs.signoffDate to original (cancelled portion) -->
+                                <template v-if="row.rfs.signoffDate < row.onboard.signoff">
+                                    <div class="gantt-bar bar-signoff-early"
+                                         :style="barStyle(row.rfs.signoffDate, row.onboard.signoff)">
+                                        <div class="bar-label" style="pointer-events:none;color:#b91c1c;font-size:8px">
+                                            ↤ Early sign-off
+                                        </div>
+                                    </div>
+                                </template>
+                                <!-- LATE: RFS date > original → green extension from original to rfs.signoffDate -->
+                                <template v-else>
+                                    <div class="gantt-bar bar-signoff-late"
+                                         :style="barStyle(row.onboard.signoff, row.rfs.signoffDate)">
+                                        <div class="bar-label" style="pointer-events:none;color:#166534;font-size:8px">
+                                            Extended ↦
+                                        </div>
+                                    </div>
+                                </template>
+                            </template>
+
+                            <!-- RFX (Extend) bar — bottom zone -->
+                            <template v-if="row.rfa && row.rfa.type === 'Extend' && rfaVisible(row.rfa)">
+                                <div
+                                     :class="['gantt-bar rfa-bottom rfa-rfx', 'rfa-'+row.rfa.status]"
+                                     :style="rfaBarStyle(row.rfa)"
+                                     @click.stop="openRfaModal(row.rfa, 'rfx', row, vessel)">
+                                    <div class="bar-label" style="color:#134e4a">{{ row.rfa.rfaNo }} {{ rfaStatusIcon(row.rfa.status) }}</div>
+                                </div>
+                            </template>
+
+                            <!-- RFP (Promote) bar — bottom zone -->
+                            <template v-if="row.rfa && row.rfa.type === 'Promote' && rfaVisible(row.rfa)">
+                                <div
+                                     :class="['gantt-bar rfa-bottom rfa-rfp', 'rfa-'+row.rfa.status]"
+                                     :style="rfaBarStyle(row.rfa)"
+                                     @click.stop="openRfaModal(row.rfa, 'rfp', row, vessel)">
+                                    <div class="bar-label" style="color:#3b0764">{{ row.rfa.rfaNo }} {{ rfaStatusIcon(row.rfa.status) }}</div>
+                                </div>
+                            </template>
+
+                            <!-- RFS (Sign Off) bar — top zone -->
+                            <template v-if="row.rfs">
+                                <div
+                                     :class="['gantt-bar rfa-top rfa-rfs', 'rfa-'+row.rfs.status]"
+                                     :style="barStyle(row.rfs.dateCreated, row.rfs.signoffDate)"
+                                     @click.stop="openRfaModal(row.rfs, 'rfs', row, vessel)">
+                                    <div class="bar-label" style="color:#881337">{{ row.rfs.rfaNo }} {{ rfaStatusIcon(row.rfs.status) }}</div>
+                                </div>
+                            </template>
+
+                            <!-- RFR (Replace) — dual: RFS sign-off top + RFE embark bottom, both amber -->
+                            <template v-if="row.rfr_rfe">
+                                <!-- RFR sign-off side: top zone, amber — linked to row.rfs -->
+                                <div v-if="row.rfs"
+                                     :class="['gantt-bar rfa-top rfa-rfr', 'rfa-'+row.rfs.status]"
+                                     :style="barStyle(row.rfs.dateCreated, row.rfs.signoffDate)"
+                                     @click.stop="openRfaModal(row.rfs, 'rfr', row, vessel)">
+                                    <div class="bar-label" style="color:#78350f;font-size:9px">↑ {{ row.rfs.rfaNo }}</div>
+                                </div>
+                                <!-- RFR embark side: bottom zone, amber -->
+                                <div
+                                     :class="['gantt-bar rfa-bottom rfa-rfr', 'rfa-'+row.rfr_rfe.status]"
+                                     :style="barStyle(row.rfr_rfe.dateCreated, row.rfr_rfe.embarkDate)"
+                                     @click.stop="openRfaModal(row.rfr_rfe, 'rfr', row, vessel)">
+                                    <div class="bar-label" style="color:#78350f;font-size:9px">↓ {{ row.rfr_rfe.rfaNo }}</div>
+                                </div>
+                            </template>
+
+                            <!-- Standalone RFE (Embark action) bars are on separate rfe-rows below -->
+
+                        </div>
+                    </div>
+
+                    <!-- RFE rows (Request For Embarkation) — one row per created RFE -->
+                    <div v-for="rfe in vessel.rfeRows" :key="rfe.rfaNo"
+                        
+                         class="rfe-row flex">
+
+                        <!-- Label: rank + RFE badge -->
+                        <div class="shrink-0 flex items-center justify-between px-3 border-r bg-blue-50"
+                             :style="{ width: rankColWidth + 'px' }">
+                            <div class="min-w-0">
+                                <div class="text-[10px] font-black uppercase text-blue-700 truncate">{{ rfe.rank }}</div>
+                                <div class="text-[9px] text-blue-400 truncate">{{ rfe.rfaNo }}</div>
+                            </div>
+                            <span :class="['text-[8px] font-black uppercase px-1.5 py-0.5 rounded border shrink-0 ml-1',
+                                           rfe.status === 'active'      ? 'bg-orange-100 text-orange-700 border-orange-300' :
+                                           rfe.status === 'approval'    ? 'bg-purple-100 text-purple-700 border-purple-300' :
+                                           rfe.status === 'preparation' ? 'bg-yellow-100 text-yellow-700 border-yellow-300' :
+                                                                          'bg-green-100  text-green-700  border-green-300']">
+                                {{ rfe.status }}
+                            </span>
+                        </div>
+
+                        <!-- Chart zone -->
+                        <div class="flex-1 relative" style="overflow:visible">
+
+                            <!-- Month gridlines -->
+                            <div v-for="m in ganttMonths" :key="'grfe'+m.key+rfe.rfaNo"
+                                 class="absolute inset-y-0 border-r border-gray-100 pointer-events-none"
+                                 :style="{ left: (m.offsetDays * dayWidth) + 'px' }">
+                            </div>
+                            <div class="today-line" :style="{ left: (todayOffset * dayWidth) + 'px' }"></div>
+                            <div class="rfa-horizon-line" :style="{ left: (rfaHorizonOffset * dayWidth) + 'px' }"></div>
+
+                            <!-- Future service bar (lighter blue, same height as onboard) -->
+                            <div class="gantt-bar bar-future-service"
+                                 :style="barStyle(rfe.embarkDate, rfe.serviceEnd)">
+                                <div class="bar-label" style="color:white;pointer-events:none">{{ rfe.rank }}</div>
+                            </div>
+
+                            <!-- RFE thin bar (bottom zone, sky blue) — spans dateCreated → embarkDate -->
+                            <div :class="['gantt-bar rfa-bottom rfa-rfe', 'rfa-'+rfe.status]"
+                                 :style="barStyle(rfe.dateCreated, rfe.embarkDate)"
+                                 @click.stop="openRfaModal(rfe, 'rfe', null, vessel)">
+                                <div class="bar-label" style="color:#0c4a6e;pointer-events:none">
+                                    {{ rfe.rfaNo }} {{ rfaStatusIcon(rfe.status) }}
+                                </div>
+                            </div>
+
+                        </div>
+                    </div>
+
+                </template>
+
+                <!-- Footer today / horizon labels -->
+                <div class="relative border-t bg-gray-50 h-6 sticky bottom-0"
+                     :style="{ paddingLeft: rankColWidth + 'px' }">
+                    <div class="today-line"       :style="{ left: (rankColWidth + todayOffset * dayWidth) + 'px' }"></div>
+                    <span class="today-label"     :style="{ left: (rankColWidth + todayOffset * dayWidth) + 'px' }">TODAY</span>
+                    <div class="rfa-horizon-line" :style="{ left: (rankColWidth + rfaHorizonOffset * dayWidth) + 'px' }"></div>
+                    <span class="rfa-horizon-label" :style="{ left: (rankColWidth + rfaHorizonOffset * dayWidth) + 'px' }">+2 mo</span>
+                </div>
+
+            </div>
+        </div>
+    </main>
+
+    <!-- ── Context menu ───────────────────────────────────── -->
+    <div v-if="ctxMenu.visible"
+         class="fixed bg-white rounded-lg shadow-2xl border border-gray-200 py-1 min-w-[220px]"
+         :style="{ zIndex: 9999, top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }"
+         @click.stop>
+
+        <!-- Details header -->
+        <div class="px-4 py-2.5 border-b border-gray-100">
+            <div class="font-bold text-[12px] text-slate-800 leading-tight">{{ ctxMenu.row && ctxMenu.row.onboard.name }}</div>
+            <div class="text-[10px] text-slate-400 uppercase tracking-wide mt-0.5">
+                {{ ctxMenu.row && ctxMenu.row.rank }} · {{ ctxMenu.vessel && ctxMenu.vessel.name }}
+            </div>
+            <div class="mt-1.5 space-y-0.5 text-[11px] text-gray-600" v-if="ctxMenu.row">
+                <div><span class="text-gray-400">Embarked:</span> {{ ctxMenu.row.onboard.embark }}</div>
+                <div><span class="text-gray-400">Est. Sign-off:</span> {{ ctxMenu.row.onboard.signoff }}</div>
+                <div><span class="text-gray-400">Contract:</span> {{ ctxMenu.row.onboard.contract }}</div>
+            </div>
+        </div>
+
+        <!-- Action options -->
+        <div class="py-1">
+            <div class="px-3 py-1 text-[9px] font-black text-gray-400 uppercase tracking-widest">Issue RFA as</div>
+            <button v-for="action in ['Extend','Replace','Promote','Sign Off']" :key="action"
+                    @click.stop="openModal(action, ctxMenu.vessel, ctxMenu.row)"
+                    class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 flex items-center gap-2 transition">
+                <span class="text-base">{{ {Extend:'⏩', Replace:'🔄', Promote:'⬆️', 'Sign Off':'🚪'}[action] }}</span>
+                {{ action }}
+            </button>
+        </div>
+    </div>
+
+    <!-- ── RFA Modal ──────────────────────────────────────── -->
+    <div v-if="modal.visible"
+         class="fixed inset-0 flex items-center justify-center p-4"
+         :style="{ zIndex: 9998 }"
+         @click.self="modal.visible = false">
+        <div class="absolute inset-0 bg-black/50" @click="modal.visible = false"></div>
+        <div class="relative bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col"
+             :style="{ zIndex: 9999, width: '520px', maxWidth:'96vw', maxHeight:'90vh' }"
+             @click.stop>
+
+            <!-- Modal header -->
+            <div class="px-6 py-4 bg-slate-800 text-white flex items-center justify-between shrink-0">
+                <div>
+                    <div class="font-bold text-sm tracking-tight">
+                        {{ {Embark:'New Embarkation (RFE)', Extend:'Extend Contract (RFX)', Replace:'Replace Seafarer (RFR)', Promote:'Promote Seafarer (RFP)', 'Sign Off':'Request For Sign-Off (RFS)'}[modal.action] }}
+                    </div>
+                    <div class="text-slate-400 text-xs mt-0.5" v-if="modal.vessel">
+                        {{ modal.vessel.name }} · {{ modal.vessel.client }}
+                    </div>
+                </div>
+                <span :class="['text-xs font-black px-2 py-0.5 rounded uppercase tracking-wide',
+                               {Embark:'bg-sky-600', Extend:'bg-teal-600', Replace:'bg-amber-600',
+                                Promote:'bg-purple-600', 'Sign Off':'bg-rose-600'}[modal.action]]">
+                    {{ {Embark:'RFE', Extend:'RFX', Replace:'RFR', Promote:'RFP', 'Sign Off':'RFS'}[modal.action] }}
+                </span>
+            </div>
+
+            <!-- ── Embark (RFE) form ── -->
+            <div v-if="modal.action === 'Embark'" class="px-6 py-5 space-y-4 overflow-y-auto">
+
+                <!-- Vessel (read-only) -->
+                <div>
+                    <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Vessel</label>
+                    <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none">
+                        {{ modal.vessel && modal.vessel.name }}
+                        <span class="text-gray-400 text-xs ml-2">{{ modal.vessel && modal.vessel.client }}</span>
+                    </div>
+                </div>
+
+                <!-- Rank (dropdown) -->
+                <div>
+                    <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Rank</label>
+                    <select v-model="embarkForm.rank"
+                            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400 bg-white">
+                        <option value="">— select rank —</option>
+                        <option v-for="r in allRanks" :key="r" :value="r">{{ r }}</option>
+                    </select>
+                </div>
+
+                <!-- Date Created + Est. Embarkation Date -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Date Created</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none">{{ todayStr }}</div>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Est. Embarkation Date</label>
+                        <input type="date" v-model="embarkForm.embarkDate" :min="todayStr"
+                               class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400">
+                    </div>
+                </div>
+
+                <!-- Embarkation Port -->
+                <div>
+                    <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Embarkation Port</label>
+                    <input type="text" v-model="embarkForm.port" placeholder="e.g. Port of Manila"
+                           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400">
+                </div>
+
+                <!-- Contract Length + Variation -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Contract Length (months)</label>
+                        <div class="flex items-center gap-2">
+                            <button @click.stop="embarkForm.contractMonths = Math.max(1, embarkForm.contractMonths - 1)"
+                                    class="w-8 h-8 rounded border border-gray-300 text-gray-600 hover:bg-gray-100 font-bold text-base flex items-center justify-center">−</button>
+                            <span class="w-8 text-center font-bold text-sm">{{ embarkForm.contractMonths }}</span>
+                            <button @click.stop="embarkForm.contractMonths = Math.min(24, embarkForm.contractMonths + 1)"
+                                    class="w-8 h-8 rounded border border-gray-300 text-gray-600 hover:bg-gray-100 font-bold text-base flex items-center justify-center">+</button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">± Variation (months)</label>
+                        <div class="flex items-center gap-2">
+                            <button @click.stop="embarkForm.contractVariation = Math.max(0, embarkForm.contractVariation - 1)"
+                                    class="w-8 h-8 rounded border border-gray-300 text-gray-600 hover:bg-gray-100 font-bold text-base flex items-center justify-center">−</button>
+                            <span class="w-8 text-center font-bold text-sm">{{ embarkForm.contractVariation }}</span>
+                            <button @click.stop="embarkForm.contractVariation = Math.min(6, embarkForm.contractVariation + 1)"
+                                    class="w-8 h-8 rounded border border-gray-300 text-gray-600 hover:bg-gray-100 font-bold text-base flex items-center justify-center">+</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Preview -->
+                <div v-show="embarkForm.rank && embarkForm.embarkDate"
+                     class="text-[11px] bg-sky-50 border border-sky-200 rounded-lg px-4 py-3 space-y-1">
+                    <div class="font-bold text-sky-800 text-[11px] uppercase tracking-wide mb-1.5">RFE Preview</div>
+                    <div><span class="text-gray-400">Rank:</span> <span class="font-semibold text-gray-700">{{ embarkForm.rank }}</span></div>
+                    <div><span class="text-gray-400">Est. Embarkation:</span> <span class="font-semibold text-gray-700">{{ embarkForm.embarkDate }}</span></div>
+                    <div><span class="text-gray-400">Service window:</span>
+                        <span class="font-semibold text-sky-700">
+                            {{ embarkForm.embarkDate }} → {{ embarkForm.embarkDate ? isoDate(addM(d(embarkForm.embarkDate), embarkForm.contractMonths)) : '—' }}
+                        </span>
+                    </div>
+                    <div><span class="text-gray-400">Contract:</span> <span class="font-semibold text-gray-700">{{ embarkForm.contractMonths }} ± {{ embarkForm.contractVariation }} months</span></div>
+                </div>
+            </div>
+
+            <!-- ── Extend (RFX) form ── -->
+            <div v-else-if="modal.action === 'Extend'" class="px-6 py-5 space-y-4 overflow-y-auto">
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Vessel</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none truncate">{{ modal.vessel && modal.vessel.name }}</div>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Rank</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none">{{ modal.row && modal.row.rank }}</div>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Seafarer</label>
+                    <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-600 font-semibold select-none">{{ modal.row && modal.row.onboard.name }}</div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Embarkation Date</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none">{{ modal.row && modal.row.onboard.embark }}</div>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">New Est. Sign-off</label>
+                        <input type="date" v-model="extendForm.newSignoff" :min="modal.row && modal.row.onboard.signoff"
+                               class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400">
+                    </div>
+                </div>
+                <div class="text-[11px] bg-teal-50 border border-teal-200 rounded-lg px-4 py-3 space-y-1">
+                    <div class="font-bold text-teal-800 text-[11px] uppercase tracking-wide mb-1.5">RFX Preview</div>
+                    <div><span class="text-gray-400">Seafarer:</span> <span class="font-semibold text-gray-700">{{ modal.row && modal.row.onboard.name }}</span></div>
+                    <div><span class="text-gray-400">Current sign-off:</span> <span class="font-semibold text-gray-700">{{ modal.row && modal.row.onboard.signoff }}</span></div>
+                    <div><span class="text-gray-400">New sign-off:</span> <span class="font-semibold text-teal-700">{{ extendForm.newSignoff || '—' }}</span></div>
+                </div>
+            </div>
+
+            <!-- ── Replace (RFR) form ── -->
+            <div v-else-if="modal.action === 'Replace'" class="px-6 py-5 space-y-4 overflow-y-auto">
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Vessel</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none truncate">{{ modal.vessel && modal.vessel.name }}</div>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Rank</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none">{{ modal.row && modal.row.rank }}</div>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Current Seafarer (signing off)</label>
+                    <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-600 font-semibold select-none">{{ modal.row && modal.row.onboard.name }}</div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Date Created</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none">{{ todayStr }}</div>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Est. Replacement Date</label>
+                        <input type="date" v-model="replaceForm.replacementDate"
+                               class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Replacement Port</label>
+                    <input type="text" v-model="replaceForm.port" placeholder="e.g. Port of Singapore"
+                           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400">
+                </div>
+                <div v-show="replaceForm.replacementDate"
+                     class="text-[11px] bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 space-y-1">
+                    <div class="font-bold text-amber-800 text-[11px] uppercase tracking-wide mb-1.5">RFR Preview — dual RFA</div>
+                    <div class="flex gap-4">
+                        <div class="flex-1 bg-white rounded border border-orange-200 px-3 py-2 space-y-0.5">
+                            <div class="text-[9px] font-black uppercase text-orange-600 mb-1">RFS — Sign Off</div>
+                            <div><span class="text-gray-400">From:</span> <span class="font-semibold text-gray-700">{{ todayStr }}</span></div>
+                            <div><span class="text-gray-400">To:</span> <span class="font-semibold text-orange-700">{{ replaceForm.replacementDate }}</span></div>
+                        </div>
+                        <div class="flex-1 bg-white rounded border border-orange-200 px-3 py-2 space-y-0.5">
+                            <div class="text-[9px] font-black uppercase text-orange-600 mb-1">RFE — Embark</div>
+                            <div><span class="text-gray-400">From:</span> <span class="font-semibold text-gray-700">{{ todayStr }}</span></div>
+                            <div><span class="text-gray-400">To:</span> <span class="font-semibold text-orange-700">{{ replaceForm.replacementDate }}</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Sign Off (RFS) form ── -->
+            <div v-else-if="modal.action === 'Sign Off'" class="px-6 py-5 space-y-4 overflow-y-auto">
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Vessel</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none truncate">{{ modal.vessel && modal.vessel.name }}</div>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Rank</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none">{{ modal.row && modal.row.rank }}</div>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Seafarer</label>
+                    <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-600 font-semibold select-none">{{ modal.row && modal.row.onboard.name }}</div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Date Created</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none">{{ todayStr }}</div>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Est. Sign-off Date</label>
+                        <input type="date" v-model="signoffForm.signoffDate"
+                               class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Sign-off Port</label>
+                    <input type="text" v-model="signoffForm.port" placeholder="e.g. Port of Rotterdam"
+                           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400">
+                </div>
+                <div v-show="signoffForm.signoffDate"
+                     class="text-[11px] bg-rose-50 border border-rose-200 rounded-lg px-4 py-3 space-y-1">
+                    <div class="font-bold text-rose-800 text-[11px] uppercase tracking-wide mb-1.5">RFS Preview</div>
+                    <div><span class="text-gray-400">Seafarer:</span> <span class="font-semibold text-gray-700">{{ modal.row && modal.row.onboard.name }}</span></div>
+                    <div><span class="text-gray-400">RFS start:</span> <span class="font-semibold text-gray-700">{{ todayStr }} (today)</span></div>
+                    <div><span class="text-gray-400">Est. sign-off:</span> <span class="font-semibold text-rose-700">{{ signoffForm.signoffDate }}</span></div>
+                    <div v-show="signoffForm.port"><span class="text-gray-400">Port:</span> <span class="font-semibold text-gray-700">{{ signoffForm.port }}</span></div>
+                </div>
+            </div>
+
+            <!-- ── Promote (RFP) form ── -->
+            <div v-else-if="modal.action === 'Promote'" class="px-6 py-5 space-y-4 overflow-y-auto">
+                <!-- Vessel + Current Rank -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Vessel</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none truncate">{{ modal.vessel && modal.vessel.name }}</div>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Current Rank</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none">{{ modal.row && modal.row.rank }}</div>
+                    </div>
+                </div>
+                <!-- Seafarer -->
+                <div>
+                    <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Seafarer</label>
+                    <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-600 font-semibold select-none">{{ modal.row && modal.row.onboard.name }}</div>
+                </div>
+                <!-- Embarkation + Sign-off (read-only) -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Embarkation Date</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none">{{ modal.row && modal.row.onboard.embark }}</div>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Est. Sign-off Date</label>
+                        <div class="w-full border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-sm text-gray-500 select-none">{{ modal.row && modal.row.onboard.signoff }}</div>
+                    </div>
+                </div>
+                <!-- New Rank (higher ranks only) -->
+                <div>
+                    <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">New Rank (promotion target)</label>
+                    <select v-model="promoteForm.newRank"
+                            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400 bg-white">
+                        <option value="">— select target rank —</option>
+                        <option v-for="r in higherRanks" :key="r" :value="r">{{ r }}</option>
+                    </select>
+                </div>
+                <!-- Date of Promotion -->
+                <div>
+                    <label class="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Date of Promotion</label>
+                    <input type="date" v-model="promoteForm.promotionDate"
+                           :min="todayStr"
+                           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400">
+                </div>
+                <!-- Preview -->
+                <div v-show="promoteForm.newRank && promoteForm.promotionDate"
+                     class="text-[11px] bg-purple-50 border border-purple-200 rounded-lg px-4 py-3 space-y-1">
+                    <div class="font-bold text-purple-800 text-[11px] uppercase tracking-wide mb-1.5">RFP Preview</div>
+                    <div><span class="text-gray-400">Seafarer:</span> <span class="font-semibold text-gray-700">{{ modal.row && modal.row.onboard.name }}</span></div>
+                    <div><span class="text-gray-400">Promotion:</span>
+                        <span class="font-semibold text-gray-700">{{ modal.row && modal.row.rank }}</span>
+                        <span class="text-purple-600 font-bold mx-1">→</span>
+                        <span class="font-bold text-purple-800">{{ promoteForm.newRank }}</span>
+                    </div>
+                    <div><span class="text-gray-400">Effective:</span> <span class="font-semibold text-purple-700">{{ promoteForm.promotionDate }}</span></div>
+                </div>
+            </div>
+
+            <!-- ── Modal footer ── -->
+            <div class="px-6 py-4 bg-gray-50 border-t flex justify-end gap-3 shrink-0">
+                <button @click="modal.visible = false"
+                        class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100 transition font-semibold">
+                    Cancel
+                </button>
+                <button @click="submitModal"
+                        :disabled="(modal.action === 'Embark'   && (!embarkForm.rank || !embarkForm.embarkDate)) ||
+                                   (modal.action === 'Extend'   && !extendForm.newSignoff) ||
+                                   (modal.action === 'Sign Off' && !signoffForm.signoffDate) ||
+                                   (modal.action === 'Replace'  && !replaceForm.replacementDate) ||
+                                   (modal.action === 'Promote'  && (!promoteForm.newRank || !promoteForm.promotionDate))"
+                        :class="['px-5 py-2 text-sm rounded-lg text-white font-bold transition disabled:opacity-40 disabled:cursor-not-allowed',
+                                 {Embark:'bg-sky-600 hover:bg-sky-700', Extend:'bg-teal-600 hover:bg-teal-700',
+                                  Replace:'bg-amber-500 hover:bg-amber-600', Promote:'bg-purple-600 hover:bg-purple-700',
+                                  'Sign Off':'bg-rose-600 hover:bg-rose-700'}[modal.action]]">
+                    Add
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── RFA Detail / Edit / Delete Modal ─────────────────── -->
+    <div v-if="rfaModal.visible"
+         class="fixed inset-0 flex items-center justify-center"
+         :style="{ zIndex: 10000 }"
+         @click.self="rfaModal.visible = false">
+        <div class="absolute inset-0 bg-black/50" @click="rfaModal.visible = false"></div>
+
+        <!-- Wide two-pane layout for active RFE only -->
+        <div v-if="rfaModal.kind === 'rfe' && rfaModal.data && rfaModal.data.status === 'active'"
+             class="relative bg-white rounded-xl shadow-2xl overflow-hidden flex flex-col"
+             :style="{ zIndex: 10001, width:'960px', maxWidth:'96vw', maxHeight:'90vh' }"
+             @click.stop>
+
+            <!-- Header -->
+            <div :class="['px-6 py-4 text-white flex items-center justify-between shrink-0', rfaModalHeaderClass]">
+                <div>
+                    <div class="font-bold text-sm tracking-tight">{{ rfaModal.data && rfaModal.data.rfaNo }}</div>
+                    <div class="text-xs mt-0.5 opacity-70">
+                        {{ rfaModal.row && rfaModal.row.rank }} · {{ rfaModal.vessel && rfaModal.vessel.name }}
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="text-xs font-black px-2 py-0.5 rounded bg-white/20 uppercase tracking-wide">{{ rfaModalTypeName }}</span>
+                    <span :class="['text-xs font-black px-2 py-0.5 rounded uppercase tracking-wide', rfaStatusBadgeClass]">{{ rfaModal.data && rfaModal.data.status }}</span>
+                </div>
+            </div>
+
+            <!-- Two-pane body -->
+            <div class="flex flex-1 overflow-hidden">
+
+                <!-- LEFT PANE: detail + status + actions -->
+                <div class="w-72 shrink-0 flex flex-col border-r overflow-y-auto">
+                    <div class="px-5 py-5 space-y-4 flex-1" v-if="rfaModal.data">
+
+                        <!-- Context -->
+                        <div class="space-y-2 text-[11px]">
+                            <div class="flex gap-4">
+                                <div class="flex-1">
+                                    <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Vessel</div>
+                                    <div class="font-semibold text-gray-700">{{ rfaModal.vessel && rfaModal.vessel.name }}</div>
+                                </div>
+                                <div class="flex-1">
+                                    <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Rank</div>
+                                    <div class="font-semibold text-gray-700">{{ (rfaModal.row && rfaModal.row.rank) || (rfaModal.data && rfaModal.data.rank) }}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Dates -->
+                        <div class="grid grid-cols-2 gap-3 text-[11px]">
+                            <div>
+                                <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Date Created</div>
+                                <div class="font-semibold text-gray-700">{{ rfaModal.data.dateCreated || '—' }}</div>
+                            </div>
+                            <div>
+                                <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Est. Embarkation</div>
+                                <div class="font-semibold text-sky-700">{{ rfaModal.data.embarkDate }}</div>
+                            </div>
+                            <div v-if="rfaModal.data.port">
+                                <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Port</div>
+                                <div class="font-semibold text-gray-700">{{ rfaModal.data.port }}</div>
+                            </div>
+                            <div v-if="rfaModal.data.contractMonths">
+                                <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Contract</div>
+                                <div class="font-semibold text-gray-700">{{ rfaModal.data.contractMonths }} ± {{ rfaModal.data.contractVariation || 0 }}m</div>
+                            </div>
+                        </div>
+
+                        <!-- Status editor -->
+                        <div>
+                            <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-1.5">Status</div>
+                            <div class="flex gap-2 flex-wrap">
+                                <button v-for="s in rfaStatusOptions" :key="s.value"
+                                        @click="rfaModal.editStatus = s.value"
+                                        :class="['px-3 py-1.5 rounded-lg text-xs font-bold border transition',
+                                                 rfaModal.editStatus === s.value ? s.activeClass : 'bg-white border-gray-200 text-gray-500 hover:border-gray-400']">
+                                    {{ s.icon }} {{ s.label }}
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Delete confirmation -->
+                        <div v-if="rfaModal.confirmDelete"
+                             class="bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+                            <div class="text-[11px] font-bold text-red-700 mb-2">Delete {{ rfaModal.data.rfaNo }}?</div>
+                            <div class="text-[11px] text-red-600 mb-3">This will remove the bar from the chart.</div>
+                            <div class="flex gap-2">
+                                <button @click="deleteRfa" class="px-4 py-1.5 bg-red-600 text-white text-xs font-bold rounded-lg hover:bg-red-700 transition">Yes, Delete</button>
+                                <button @click="rfaModal.confirmDelete = false" class="px-4 py-1.5 bg-white border border-gray-300 text-gray-600 text-xs font-semibold rounded-lg hover:bg-gray-50 transition">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Left footer: Issue RFC + Delete / Save -->
+                    <div class="px-5 py-3 border-t bg-gray-50 shrink-0 space-y-2">
+                        <button :class="['w-full px-4 py-2 text-xs font-bold rounded-lg border-2 transition uppercase tracking-wide',
+                                         rfaModal.rfcIssued
+                                           ? 'border-orange-400 bg-orange-50 text-orange-700 cursor-default'
+                                           : 'border-orange-400 text-orange-600 hover:bg-orange-50']"
+                                @click="rfaModal.rfcIssued = true">
+                            {{ rfaModal.rfcIssued ? '✓ RFC Issued to Recruitment' : 'Issue RFC to Recruitment' }}
+                        </button>
+                        <div class="flex justify-between items-center gap-2">
+                            <button @click="rfaModal.confirmDelete = true"
+                                    class="px-3 py-1.5 text-xs rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition font-semibold">
+                                🗑 Delete
+                            </button>
+                            <div class="flex gap-2">
+                                <button @click="rfaModal.visible = false"
+                                        class="px-3 py-1.5 text-xs rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100 transition font-semibold">
+                                    Cancel
+                                </button>
+                                <button @click="saveRfa"
+                                        class="px-4 py-1.5 text-xs rounded-lg text-white font-bold transition bg-sky-700 hover:bg-sky-800">
+                                    Save
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- RIGHT PANE: Candidate pool -->
+                <div class="flex-1 flex flex-col overflow-hidden bg-slate-50">
+
+                    <!-- Pane header -->
+                    <div class="p-4 border-b bg-white flex justify-between items-center shrink-0">
+                        <div>
+                            <div class="font-bold text-slate-800 tracking-tight">{{ (rfaModal.row && rfaModal.row.rank) || (rfaModal.data && rfaModal.data.rank) }} Candidates</div>
+                            <div class="text-[11px] text-gray-500 mt-0.5">
+                                For: {{ rfaModal.vessel && rfaModal.vessel.name }} ({{ rfaModal.vessel && rfaModal.vessel.type }})
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <button @click="rfaModal.showCompare = true"
+                                    :disabled="rfaModal.selectedCandidates.length < 2"
+                                    class="bg-gray-200 text-gray-700 px-3 py-1.5 text-xs rounded font-bold disabled:opacity-30 hover:bg-gray-300 transition">
+                                Compare
+                            </button>
+                            <button @click="rfaModal.showProposal = true"
+                                    :disabled="rfaModal.selectedCandidates.length === 0"
+                                    class="bg-emerald-600 text-white px-4 py-1.5 text-xs rounded font-bold shadow disabled:opacity-30 hover:bg-emerald-700 transition">
+                                Propose ({{ rfaModal.selectedCandidates.length }})
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Avail filter bar -->
+                    <div class="px-4 py-2 border-b bg-white flex items-center gap-3 shrink-0">
+                        <span class="text-[10px] text-gray-400 uppercase font-bold shrink-0">Available from</span>
+                        <input type="date" v-model="rfaModal.availFilter"
+                               :max="rfaModal.data && rfaModal.data.embarkDate"
+                               class="text-xs border rounded px-2 py-1 bg-white text-gray-700 focus:outline-none focus:border-sky-400">
+                        <span class="text-[10px] text-gray-400 shrink-0">to join date
+                            <span class="font-semibold text-sky-700">{{ rfaModal.data && rfaModal.data.embarkDate }}</span>
+                        </span>
+                        <button @click="rfaModal.availFilter = rfaModalAvailDefault"
+                                class="ml-auto text-[9px] text-sky-500 hover:text-sky-700 font-bold uppercase">Reset</button>
+                    </div>
+
+                    <!-- Candidate list -->
+                    <div class="flex-1 overflow-y-auto p-4 space-y-6">
+                        <section v-for="cat in candidateCategories" :key="cat.label">
+                            <h3 class="text-[10px] font-black text-gray-400 uppercase mb-3 border-b pb-1 flex justify-between">
+                                <span>{{ cat.label }}</span>
+                                <span>{{ getRfeCandidates(cat.label).length }} Found</span>
+                            </h3>
+                            <div v-if="getRfeCandidates(cat.label).length === 0" class="text-[11px] text-gray-300 italic px-1 pb-2">None available</div>
+                            <div class="space-y-2">
+                                <div v-for="sea in getRfeCandidates(cat.label)" :key="sea.id"
+                                     class="w-full border rounded p-3 bg-white hover:bg-gray-50 transition border-l-4"
+                                     :style="{ borderColor: cat.color }">
+                                    <div class="flex items-start">
+                                        <input type="checkbox" v-model="rfaModal.selectedCandidates" :value="sea" class="mr-3 mt-1 w-4 h-4 shrink-0 accent-sky-600">
+                                        <div class="flex-1 min-w-0">
+                                            <!-- Row 1: Name + Availability -->
+                                            <div class="grid grid-cols-3 gap-2 items-baseline mb-2">
+                                                <div class="col-span-2">
+                                                    <div class="font-bold text-blue-900 text-sm leading-tight">{{ sea.name }}</div>
+                                                    <div class="text-[10px] text-gray-400 uppercase tracking-wide">{{ sea.nationality }}</div>
+                                                </div>
+                                                <div class="text-right">
+                                                    <div class="text-[9px] text-gray-400 uppercase">Available</div>
+                                                    <div class="text-xs font-bold text-emerald-700">{{ sea.availDate }}</div>
+                                                </div>
+                                            </div>
+                                            <!-- Row 2: Age / BMI / CES -->
+                                            <div class="grid grid-cols-4 gap-2 mb-2 text-center">
+                                                <div>
+                                                    <div class="text-[9px] text-gray-400 uppercase mb-0.5">Age</div>
+                                                    <div class="text-xs font-semibold text-gray-700">{{ sea.age }}</div>
+                                                </div>
+                                                <div>
+                                                    <div class="text-[9px] text-gray-400 uppercase mb-0.5">BMI</div>
+                                                    <div class="text-xs font-semibold text-gray-700">{{ sea.bmi }}</div>
+                                                </div>
+                                                <div>
+                                                    <div class="text-[9px] text-gray-400 uppercase mb-0.5">CES STCW</div>
+                                                    <div :class="['text-xs font-semibold', sea.cesStcw >= 85 ? 'text-emerald-600' : sea.cesStcw >= 70 ? 'text-amber-600' : 'text-red-600']">{{ sea.cesStcw }}</div>
+                                                </div>
+                                                <div>
+                                                    <div class="text-[9px] text-gray-400 uppercase mb-0.5">CES Eng</div>
+                                                    <div :class="['text-xs font-semibold', sea.cesEnglish >= 85 ? 'text-emerald-600' : sea.cesEnglish >= 70 ? 'text-amber-600' : 'text-red-600']">{{ sea.cesEnglish }}</div>
+                                                </div>
+                                            </div>
+                                            <!-- Row 3: Service -->
+                                            <div class="grid grid-cols-2 gap-x-4 border-t pt-2 mt-1">
+                                                <div v-for="svc in sea.services.filter(s => s.label !== 'Other')" :key="svc.label">
+                                                    <span class="text-[9px] text-gray-400 uppercase">{{ svc.label }}</span>
+                                                    <div class="text-xs font-semibold text-gray-700">{{ svc.count }} trips · {{ svc.months }}m</div>
+                                                    <div class="text-[9px] text-gray-400">{{ svc.rank }}</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Standard single-pane layout for all other kinds / statuses -->
+        <div v-else
+             class="relative bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden"
+             :style="{ zIndex: 10001 }" @click.stop>
+
+            <!-- Header: colour-coded by type -->
+            <div :class="['px-6 py-4 text-white flex items-center justify-between', rfaModalHeaderClass]">
+                <div>
+                    <div class="font-bold text-sm tracking-tight">{{ rfaModal.data && rfaModal.data.rfaNo }}</div>
+                    <div class="text-xs mt-0.5 opacity-70">
+                        {{ rfaModal.row && rfaModal.row.rank }} · {{ rfaModal.vessel && rfaModal.vessel.name }}
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="text-xs font-black px-2 py-0.5 rounded bg-white/20 uppercase tracking-wide">{{ rfaModalTypeName }}</span>
+                    <span :class="['text-xs font-black px-2 py-0.5 rounded uppercase tracking-wide', rfaStatusBadgeClass]">{{ rfaModal.data && rfaModal.data.status }}</span>
+                </div>
+            </div>
+
+            <!-- Summary body -->
+            <div class="px-6 py-5 space-y-4" v-if="rfaModal.data">
+
+                <!-- Context: seafarer + vessel -->
+                <div class="flex gap-4 text-[11px]">
+                    <div class="flex-1">
+                        <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Vessel</div>
+                        <div class="font-semibold text-gray-700">{{ rfaModal.vessel && rfaModal.vessel.name }}</div>
+                    </div>
+                    <div class="flex-1">
+                        <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Rank</div>
+                        <div class="font-semibold text-gray-700">{{ rfaModal.row && rfaModal.row.rank }}</div>
+                    </div>
+                    <div class="flex-1" v-if="rfaModal.row && rfaModal.row.onboard">
+                        <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Current Seafarer</div>
+                        <div class="font-semibold text-gray-700">{{ rfaModal.row.onboard.name }}</div>
+                    </div>
+                </div>
+
+                <!-- Date fields -->
+                <div class="grid grid-cols-2 gap-3 text-[11px]">
+                    <div>
+                        <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Date Created</div>
+                        <div class="font-semibold text-gray-700">{{ rfaModal.data.dateCreated || rfaModal.data.rfaStart || '—' }}</div>
+                    </div>
+                    <div v-if="rfaModal.kind === 'rfs'">
+                        <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Est. Sign-off</div>
+                        <div class="font-semibold text-rose-700">{{ rfaModal.data.signoffDate }}</div>
+                    </div>
+                    <div v-else-if="rfaModal.kind === 'rfr'">
+                        <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Est. Replacement Date</div>
+                        <div class="font-semibold text-amber-700">{{ rfaModal.data.signoffDate || rfaModal.data.embarkDate }}</div>
+                    </div>
+                    <div v-else-if="rfaModal.kind === 'rfe'">
+                        <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Est. Embarkation</div>
+                        <div class="font-semibold text-sky-700">{{ rfaModal.data.embarkDate }}</div>
+                    </div>
+                    <div v-else>
+                        <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">{{ rfaModal.kind === 'rfx' ? 'Extended Until' : 'Promotion Target' }}</div>
+                        <div :class="['font-semibold', rfaModal.kind==='rfx' ? 'text-teal-700' : 'text-purple-700']">{{ rfaModal.data.rfaEnd || '—' }}</div>
+                    </div>
+                    <div v-if="rfaModal.data.port">
+                        <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-0.5">Port</div>
+                        <div class="font-semibold text-gray-700">{{ rfaModal.data.port }}</div>
+                    </div>
+                </div>
+
+                <!-- RFR companion note -->
+                <div v-if="rfaModal.kind === 'rfr'"
+                     class="text-[10px] bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-amber-800">
+                    ↑ Sign-off side · ↓ Embark side — both shown as paired amber bars on the same row.
+                </div>
+
+                <!-- Proposed seafarers (RFX / RFP) -->
+                <div v-if="(rfaModal.kind === 'rfx' || rfaModal.kind === 'rfp') && rfaModal.data.proposed && rfaModal.data.proposed.length">
+                    <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-1.5">Proposed Seafarers</div>
+                    <div class="space-y-1">
+                        <div v-for="p in rfaModal.data.proposed" :key="p.name"
+                             class="flex items-center justify-between bg-gray-50 rounded px-3 py-1.5 text-[11px]">
+                            <span class="font-semibold text-gray-700">{{ p.name }}</span>
+                            <span class="text-gray-400">{{ p.nationality }} · {{ p.service }}mo exp</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Status editor -->
+                <div>
+                    <div class="text-[9px] font-black uppercase text-gray-400 tracking-widest mb-1.5">Status</div>
+                    <div class="flex gap-2 flex-wrap">
+                        <button v-for="s in rfaStatusOptions" :key="s.value"
+                                @click="rfaModal.editStatus = s.value"
+                                :class="['px-3 py-1.5 rounded-lg text-xs font-bold border transition',
+                                         rfaModal.editStatus === s.value ? s.activeClass : 'bg-white border-gray-200 text-gray-500 hover:border-gray-400']">
+                            {{ s.icon }} {{ s.label }}
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Delete confirmation inline -->
+                <div v-if="rfaModal.confirmDelete"
+                     class="bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+                    <div class="text-[11px] font-bold text-red-700 mb-2">Delete {{ rfaModal.data.rfaNo }}?</div>
+                    <div class="text-[11px] text-red-600 mb-3">This will remove the bar from the chart.</div>
+                    <div class="flex gap-2">
+                        <button @click="deleteRfa" class="px-4 py-1.5 bg-red-600 text-white text-xs font-bold rounded-lg hover:bg-red-700 transition">Yes, Delete</button>
+                        <button @click="rfaModal.confirmDelete = false" class="px-4 py-1.5 bg-white border border-gray-300 text-gray-600 text-xs font-semibold rounded-lg hover:bg-gray-50 transition">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer -->
+            <div class="px-6 py-4 bg-gray-50 border-t flex items-center justify-between">
+                <button @click="rfaModal.confirmDelete = true"
+                        class="px-4 py-2 text-xs rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition font-semibold flex items-center gap-1.5">
+                    🗑 Delete
+                </button>
+                <div class="flex gap-2">
+                    <button @click="rfaModal.visible = false"
+                            class="px-4 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100 transition font-semibold">
+                        Cancel
+                    </button>
+                    <button @click="saveRfa"
+                            class="px-5 py-2 text-sm rounded-lg text-white font-bold transition bg-slate-700 hover:bg-slate-800">
+                        Save
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Compare modal (RFE candidates) ─────────────────────── -->
+    <div v-if="rfaModal.showCompare"
+         class="fixed inset-0 bg-slate-900/80 flex items-center justify-center p-6"
+         :style="{ zIndex: 10100 }">
+        <div class="bg-white w-full max-w-5xl rounded-lg shadow-xl flex flex-col max-h-[90vh]">
+            <div class="p-4 border-b bg-gray-50 flex justify-between items-center shrink-0">
+                <h2 class="text-base font-bold">Candidate Comparison</h2>
+                <button @click="rfaModal.showCompare = false" class="text-2xl text-gray-400 hover:text-black">&times;</button>
+            </div>
+            <div class="overflow-y-auto flex-1">
+                <table class="w-full text-xs">
+                    <thead class="sticky top-0 z-10">
+                        <tr class="bg-slate-800 text-white">
+                            <th class="p-3 text-left w-36">Criteria</th>
+                            <th v-for="s in rfaModal.selectedCandidates" :key="s.id" class="p-3 text-center text-blue-300 font-bold">{{ s.name }}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td colspan="99" class="px-3 py-1.5 bg-slate-100 text-[9px] font-black text-slate-500 uppercase tracking-widest">Basic Information</td></tr>
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="p-2 font-bold text-gray-500 uppercase text-[10px] bg-gray-50">Category</td>
+                            <td v-for="s in rfaModal.selectedCandidates" :key="s.id" class="p-2 text-center">
+                                <span :class="['text-[10px] font-bold px-2 py-0.5 rounded uppercase', s.category === 'Client Ex-Crew' ? 'bg-emerald-100 text-emerald-700' : s.category === 'Other Ex-Crew' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700']">{{ s.category }}</span>
+                            </td>
+                        </tr>
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="p-2 font-bold text-gray-500 uppercase text-[10px] bg-gray-50">Nationality</td>
+                            <td v-for="s in rfaModal.selectedCandidates" :key="s.id" class="p-2 text-center">{{ s.nationality }}</td>
+                        </tr>
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="p-2 font-bold text-gray-500 uppercase text-[10px] bg-gray-50">Age</td>
+                            <td v-for="s in rfaModal.selectedCandidates" :key="s.id" class="p-2 text-center font-medium">{{ s.age }}</td>
+                        </tr>
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="p-2 font-bold text-gray-500 uppercase text-[10px] bg-gray-50">BMI</td>
+                            <td v-for="s in rfaModal.selectedCandidates" :key="s.id" class="p-2 text-center font-medium">{{ s.bmi }}</td>
+                        </tr>
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="p-2 font-bold text-gray-500 uppercase text-[10px] bg-gray-50">Availability</td>
+                            <td v-for="s in rfaModal.selectedCandidates" :key="s.id" class="p-2 text-center font-bold text-emerald-700">{{ s.availDate }}</td>
+                        </tr>
+                        <tr><td colspan="99" class="px-3 py-1.5 bg-slate-100 text-[9px] font-black text-slate-500 uppercase tracking-widest">CES Scores</td></tr>
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="p-2 font-bold text-gray-500 uppercase text-[10px] bg-gray-50">CES STCW</td>
+                            <td v-for="s in rfaModal.selectedCandidates" :key="s.id" class="p-2 text-center">
+                                <span :class="['font-bold px-2 py-0.5 rounded', s.cesStcw >= 85 ? 'bg-emerald-100 text-emerald-700' : s.cesStcw >= 70 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700']">{{ s.cesStcw }}</span>
+                            </td>
+                        </tr>
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="p-2 font-bold text-gray-500 uppercase text-[10px] bg-gray-50">CES English</td>
+                            <td v-for="s in rfaModal.selectedCandidates" :key="s.id" class="p-2 text-center">
+                                <span :class="['font-bold px-2 py-0.5 rounded', s.cesEnglish >= 85 ? 'bg-emerald-100 text-emerald-700' : s.cesEnglish >= 70 ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700']">{{ s.cesEnglish }}</span>
+                            </td>
+                        </tr>
+                        <tr><td colspan="99" class="px-3 py-1.5 bg-slate-100 text-[9px] font-black text-slate-500 uppercase tracking-widest">Sea Service Breakdown</td></tr>
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="p-2 font-bold text-gray-500 uppercase text-[10px] bg-gray-50">At Rank<br><span class="text-[9px] font-normal">(trips / months)</span></td>
+                            <td v-for="s in rfaModal.selectedCandidates" :key="s.id" class="p-2 text-center">
+                                <div class="font-bold text-blue-800">{{ s.services[0].count }} trips</div>
+                                <div class="text-gray-500">{{ s.services[0].months }}m</div>
+                            </td>
+                        </tr>
+                        <tr class="border-b hover:bg-gray-50">
+                            <td class="p-2 font-bold text-gray-500 uppercase text-[10px] bg-gray-50">As Officer<br><span class="text-[9px] font-normal">(trips / months)</span></td>
+                            <td v-for="s in rfaModal.selectedCandidates" :key="s.id" class="p-2 text-center">
+                                <div class="font-bold text-blue-800">{{ s.services[1].count }} trips</div>
+                                <div class="text-gray-500">{{ s.services[1].months }}m</div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Proposal modal (RFE candidates) ────────────────────── -->
+    <div v-if="rfaModal.showProposal"
+         class="fixed inset-0 bg-slate-900/90 backdrop-blur-sm flex items-center justify-center p-6"
+         :style="{ zIndex: 10100 }">
+        <div class="bg-white w-full max-w-2xl rounded-lg shadow-2xl flex flex-col max-h-[90vh]">
+            <div class="p-4 bg-gray-50 border-b flex justify-between items-center shrink-0">
+                <h2 class="font-bold">Compose Proposal ({{ rfaModal.selectedCandidates.length }} Candidates)</h2>
+                <button @click="rfaModal.showProposal = false" class="text-xl">&times;</button>
+            </div>
+            <div class="p-6 overflow-y-auto space-y-4 text-xs">
+                <div class="grid grid-cols-6 items-center gap-1">
+                    <span class="text-gray-400">To:</span>
+                    <input type="text" :value="rfaModal.vessel && 'crewing@' + rfaModal.vessel.client.toLowerCase().replace(/ /g,'') + '.com'"
+                           class="col-span-5 border-b p-1 outline-none">
+                </div>
+                <div class="grid grid-cols-6 items-center gap-1">
+                    <span class="text-gray-400">Subject:</span>
+                    <input type="text" :value="'Proposal: ' + rfaModal.selectedCandidates.length + ' Candidates for ' + (rfaModal.vessel && rfaModal.vessel.name)"
+                           class="col-span-5 border-b p-1 outline-none font-medium text-sm">
+                </div>
+                <div class="mt-4 border rounded p-4 bg-white font-serif text-sm leading-relaxed shadow-inner space-y-3">
+                    <div>Dear {{ rfaModal.vessel && rfaModal.vessel.client }} Team,</div>
+                    <div>We are proposing the following {{ rfaModal.selectedCandidates.length }} candidate(s) for <strong>{{ rfaModal.vessel && rfaModal.vessel.name }}</strong> ({{ rfaModal.row && rfaModal.row.rank }}).</div>
+                    <div v-for="sea in rfaModal.selectedCandidates" :key="sea.id"
+                         class="p-3 border-l-4 border-sky-200 bg-gray-50 font-sans text-xs space-y-0.5">
+                        <div class="font-bold text-blue-900">{{ sea.name }}</div>
+                        <div class="text-gray-500">Age: {{ sea.age }} · {{ sea.nationality }} · CES STCW: {{ sea.cesStcw }}</div>
+                        <a href="#" class="text-sky-600 underline text-[10px]">Review Full Profile →</a>
+                    </div>
+                    <div>Best regards,<br>Ops Department</div>
+                </div>
+                <div class="space-y-2 border-t pt-4">
+                    <div class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Attached Documents ({{ rfaModal.selectedCandidates.length * 3 }})</div>
+                    <div v-for="sea in rfaModal.selectedCandidates" :key="'docs-'+sea.id" class="flex flex-wrap gap-2">
+                        <span class="bg-sky-50 border border-sky-200 px-2 py-1 rounded text-[10px] text-sky-700">📄 Passport_{{ sea.name.split(' ')[0] }}.pdf</span>
+                        <span class="bg-sky-50 border border-sky-200 px-2 py-1 rounded text-[10px] text-sky-700">📄 SeamansBook_{{ sea.name.split(' ')[0] }}.pdf</span>
+                        <span class="bg-sky-50 border border-sky-200 px-2 py-1 rounded text-[10px] text-sky-700">📄 STCW_Bundle.zip</span>
+                    </div>
+                </div>
+            </div>
+            <div class="p-4 border-t bg-gray-50 flex justify-end gap-3 shrink-0">
+                <button @click="rfaModal.showProposal = false"
+                        class="px-4 py-2 text-xs font-semibold border border-gray-300 text-gray-600 rounded hover:bg-gray-100 transition">Cancel</button>
+                <button @click="rfaModal.showProposal = false; rfaModal.visible = false"
+                        class="px-6 py-2 text-xs font-bold uppercase bg-sky-600 text-white rounded shadow-lg hover:bg-sky-700 transition">Send Proposal</button>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+const { createApp } = Vue;
+
+const TODAY = new Date();
+function d(s)    { return new Date(s); }
+function addM(dt, n) { const r = new Date(dt); r.setMonth(r.getMonth() + n); return r; }
+function daysB(a, b) { return Math.round((b - a) / 86400000); }
+function isoDate(dt) { return dt.toISOString().slice(0, 10); }
+function fmtShort(s) {
+    return d(s).toLocaleDateString('en', { month:'short', day:'numeric' });
+}
+function shortName(full) {
+    if (!full) return '';
+    const parts = full.trim().split(' ');
+    return parts.length === 1 ? parts[0] : parts[0][0] + '. ' + parts.slice(1).join(' ');
+}
+
+// ── Data ─────────────────────────────────────────────────────
+// Each rank row shape:
+//   onboard : { name, shortName, embark, signoff, contract }
+//   rfa     : null | {
+//               rfaNo, status ('active'|'approval'|'deployment'|'completed'),
+//               rfaStart  — 2 months before signoff,
+//               rfaEnd    — signoff + 6 months (the next person's contract end),
+//               proposed  — [{name, nationality, service}],
+//               confirmedSeafarer — name (only when status==='completed')
+//             }
+
+const allVessels = [
+
+    // ─── Global Shipping Ltd ────────────────────────────────
+    {
+        id:'v1', client:'Global Shipping Ltd',
+        name:'MV Sea Star', type:'Oil Tanker', flag:'Panama',
+        ranks:[
+            {
+                rank:'Captain',
+                onboard:{ name:'RAMON ESTRADA',   shortName:'R. Estrada',   embark:'2025-12-15', signoff:'2026-06-15', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1042', status:'approval',
+                      rfaStart:'2026-04-15', rfaEnd:'2026-12-15',
+                      proposed:[
+                          { name:'NIKOS PAPADOPOULOS', nationality:'Greek',   service:228 },
+                          { name:'VLADIM. PETROV',     nationality:'Russian', service:192 },
+                      ], confirmedSeafarer:null }
+            },
+            {
+                rank:'Chief Officer',
+                onboard:{ name:'JUAN DELA CRUZ',  shortName:'J. Dela Cruz', embark:'2026-01-01', signoff:'2026-07-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1058', status:'active',
+                      rfaStart:'2026-05-01', rfaEnd:'2027-01-01',
+                      proposed:[
+                          { name:'PETROS PAPPAS', nationality:'Greek',  service:39 },
+                          { name:'HANS MÜLLER',   nationality:'German', service:94 },
+                      ], confirmedSeafarer:null }
+            },
+            {
+                rank:'Chief Engineer',
+                onboard:{ name:'IVAN PETROV',     shortName:'I. Petrov',    embark:'2026-05-01', signoff:'2026-11-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1077', status:'active',
+                      rfaStart:'2026-09-01', rfaEnd:'2027-05-01',
+                      proposed:[], confirmedSeafarer:null }
+            },
+            {
+                rank:'Second Engineer',
+                onboard:{ name:'MARIO SANTOS',    shortName:'M. Santos',    embark:'2026-02-01', signoff:'2026-08-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1061', status:'deployment',
+                      rfaStart:'2026-06-01', rfaEnd:'2027-02-01',
+                      proposed:[
+                          { name:'CARLOS REYES', nationality:'Filipino', service:26 },
+                          { name:'AHMED HASSAN', nationality:'Egyptian', service:46 },
+                      ], confirmedSeafarer:'CARLOS REYES' }
+            },
+            {
+                rank:'Bosun',
+                onboard:{ name:'FELIX MERCADO',   shortName:'F. Mercado',   embark:'2026-03-15', signoff:'2026-09-15', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1071', status:'active',
+                      rfaStart:'2026-07-15', rfaEnd:'2027-03-15',
+                      proposed:[], confirmedSeafarer:null }
+            },
+            {
+                rank:'AB Deck', isRating: true,
+                onboard:{ name:'PEDRO RAMOS',     shortName:'P. Ramos',     embark:'2026-04-01', signoff:'2026-10-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1082', status:'active',
+                      rfaStart:'2026-08-01', rfaEnd:'2027-04-01',
+                      proposed:[], confirmedSeafarer:null }
+            },
+            {
+                rank:'Oiler', isRating: true,
+                onboard:{ name:'MARK VILLANUEVA', shortName:'M. Villanueva', embark:'2026-02-10', signoff:'2026-08-10', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1083', status:'deployment',
+                      rfaStart:'2026-06-10', rfaEnd:'2027-02-10',
+                      proposed:[
+                          { name:'RICO DELA VEGA', nationality:'Filipino', service:18 },
+                      ], confirmedSeafarer:'RICO DELA VEGA' }
+            },
+            {
+                rank:'Cook', isRating: true,
+                onboard:{ name:'JOSE BUENAVENTURA', shortName:'J. Buenaventura', embark:'2026-03-20', signoff:'2026-09-20', contract:'6 months' },
+                rfa: null
+            },
+        ]
+    },
+    {
+        id:'v2', client:'Global Shipping Ltd',
+        name:'MV Atlantic Pride', type:'Bulk Carrier', flag:'Marshall Islands',
+        ranks:[
+            {
+                rank:'Captain',
+                onboard:{ name:'DMITRI VLASOV',   shortName:'D. Vlasov',    embark:'2026-03-10', signoff:'2026-09-10', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1066', status:'deployment',
+                      rfaStart:'2026-07-10', rfaEnd:'2027-03-10',
+                      proposed:[
+                          { name:'JOSE MIRANDA',    nationality:'Filipino', service:160 },
+                          { name:'A. STAVROS',      nationality:'Greek',    service:134 },
+                      ], confirmedSeafarer:'JOSE MIRANDA' }
+            },
+            {
+                rank:'Chief Officer',
+                onboard:{ name:'SUNG-JIN PARK',   shortName:'S. Park',      embark:'2026-01-20', signoff:'2026-07-20', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1063', status:'approval',
+                      rfaStart:'2026-05-20', rfaEnd:'2027-01-20',
+                      proposed:[
+                          { name:'HANS MÜLLER',   nationality:'German', service:94 },
+                          { name:'PETROS PAPPAS', nationality:'Greek',  service:39 },
+                      ], confirmedSeafarer:null }
+            },
+            {
+                rank:'Chief Engineer',
+                onboard:{ name:'THOMAS BERG',     shortName:'T. Berg',      embark:'2026-04-01', signoff:'2026-10-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1073', status:'active',
+                      rfaStart:'2026-08-01', rfaEnd:'2027-04-01',
+                      proposed:[
+                          { name:'LEV OKONKWO', nationality:'Nigerian', service:60 },
+                      ], confirmedSeafarer:null }
+            },
+            {
+                rank:'AB Deck', isRating: true,
+                onboard:{ name:'CHEN WEI',        shortName:'C. Wei',       embark:'2026-03-01', signoff:'2026-09-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1084', status:'approval',
+                      rfaStart:'2026-07-01', rfaEnd:'2027-03-01',
+                      proposed:[
+                          { name:'RAUL MENDOZA', nationality:'Filipino', service:24 },
+                          { name:'DINO REYES',   nationality:'Filipino', service:12 },
+                      ], confirmedSeafarer:null }
+            },
+            {
+                rank:'Wiper', isRating: true,
+                onboard:{ name:'ARIEL SANTOS',    shortName:'A. Santos',    embark:'2026-04-15', signoff:'2026-10-15', contract:'6 months' },
+                rfa: null
+            },
+        ]
+    },
+
+    // ─── Blue Water Corp ────────────────────────────────────
+    {
+        id:'v3', client:'Blue Water Corp',
+        name:'Oceanic Express', type:'Container', flag:'Liberia',
+        ranks:[
+            {
+                rank:'Captain',
+                onboard:{ name:'PHUOC NGUYEN',    shortName:'P. Nguyen',    embark:'2025-12-01', signoff:'2026-06-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1038', status:'deployment',
+                      rfaStart:'2026-04-01', rfaEnd:'2026-12-01',
+                      proposed:[
+                          { name:'VLADIM. PETROV', nationality:'Russian',  service:180 },
+                          { name:'JOSE MIRANDA',   nationality:'Filipino', service:160 },
+                      ], confirmedSeafarer:'VLADIM. PETROV' }
+            },
+            {
+                rank:'Second Engineer',
+                onboard:{ name:'RODRIGO SANTOS',  shortName:'R. Santos',    embark:'2026-02-15', signoff:'2026-08-15', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1044', status:'deployment',
+                      rfaStart:'2026-06-15', rfaEnd:'2027-02-15',
+                      proposed:[
+                          { name:'MARCO ESPOSITO', nationality:'Italian',  service:115 },
+                          { name:'AHMED HASSAN',   nationality:'Egyptian', service:46 },
+                      ], confirmedSeafarer:'MARCO ESPOSITO' }
+            },
+            {
+                rank:'Chief Officer',
+                onboard:{ name:'KRISTIAN ANDERSEN', shortName:'K. Andersen', embark:'2026-03-05', signoff:'2026-09-05', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1069', status:'active',
+                      rfaStart:'2026-07-05', rfaEnd:'2027-03-05',
+                      proposed:[], confirmedSeafarer:null }
+            },
+            {
+                rank:'Electrician',
+                onboard:{ name:'BENITO TORRES',   shortName:'B. Torres',    embark:'2026-04-10', signoff:'2026-10-10', contract:'6 months' },
+                rfa: null
+            },
+            {
+                rank:'AB Deck', isRating: true,
+                onboard:{ name:'SANTOS CRUZ',     shortName:'S. Cruz',      embark:'2026-03-20', signoff:'2026-09-20', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1085', status:'active',
+                      rfaStart:'2026-07-20', rfaEnd:'2027-03-20',
+                      proposed:[], confirmedSeafarer:null }
+            },
+            {
+                rank:'Motorman', isRating: true,
+                onboard:{ name:'FELIX REYES',     shortName:'F. Reyes',     embark:'2026-01-01', signoff:'2026-07-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1086', status:'deployment',
+                      rfaStart:'2026-05-01', rfaEnd:'2027-01-01',
+                      proposed:[
+                          { name:'ROMMEL BASA', nationality:'Filipino', service:30 },
+                      ], confirmedSeafarer:null }
+            },
+            {
+                rank:'Ordinary Seaman', isRating: true,
+                onboard:{ name:'JUAN CARLOS REYES', shortName:'J. Reyes',   embark:'2026-03-10', signoff:'2026-09-10', contract:'6 months' },
+                rfa: null
+            },
+        ]
+    },
+
+    // ─── Alpha Tankers ──────────────────────────────────────
+    {
+        id:'v4', client:'Alpha Tankers',
+        name:'Alpha Prime', type:'Chemical Tanker', flag:'Greece',
+        ranks:[
+            {
+                rank:'Captain',
+                onboard:{ name:'NIKOS PAPADOPOULOS', shortName:'N. Papadopoulos', embark:'2025-11-20', signoff:'2026-05-20', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1039', status:'approval',
+                      rfaStart:'2026-03-20', rfaEnd:'2026-11-20',
+                      proposed:[
+                          { name:'JOSE MIRANDA',       nationality:'Filipino', service:160 },
+                          { name:'VLADIM. PETROV',     nationality:'Russian',  service:180 },
+                          { name:'ALEXANDROS STAVROS', nationality:'Greek',    service:134 },
+                      ], confirmedSeafarer:null }
+            },
+            {
+                rank:'Chief Officer',
+                onboard:{ name:'GIORGOS LAMBROS',  shortName:'G. Lambros',   embark:'2026-03-01', signoff:'2026-09-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1067', status:'deployment',
+                      rfaStart:'2026-07-01', rfaEnd:'2027-02-15',
+                      proposed:[
+                          { name:'JUAN DELA CRUZ', nationality:'Filipino', service:77 },
+                          { name:'HANS MÜLLER',    nationality:'German',   service:94 },
+                      ], confirmedSeafarer:'JUAN DELA CRUZ' }
+            },
+            {
+                rank:'Chief Engineer',
+                onboard:{ name:'SERGEI VORONOV',   shortName:'S. Voronov',   embark:'2026-01-15', signoff:'2026-07-15', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1055', status:'deployment',
+                      rfaStart:'2026-05-15', rfaEnd:'2027-01-15',
+                      proposed:[
+                          { name:'MARCO ESPOSITO', nationality:'Italian', service:115 },
+                      ], confirmedSeafarer:'MARCO ESPOSITO' }
+            },
+            {
+                rank:'Second Engineer',
+                onboard:{ name:'DMITRI VOLKOV',    shortName:'D. Volkov',    embark:'2026-04-01', signoff:'2026-10-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1075', status:'active',
+                      rfaStart:'2026-08-01', rfaEnd:'2027-04-01',
+                      proposed:[
+                          { name:'AHMED HASSAN', nationality:'Egyptian', service:46 },
+                      ], confirmedSeafarer:null }
+            },
+            {
+                rank:'Pump Man', isRating: true,
+                onboard:{ name:'ANTONIO GARCIA',  shortName:'A. Garcia',    embark:'2026-02-01', signoff:'2026-08-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1087', status:'active',
+                      rfaStart:'2026-06-01', rfaEnd:'2027-02-01',
+                      proposed:[], confirmedSeafarer:null }
+            },
+            {
+                rank:'Able Seaman', isRating: true,
+                onboard:{ name:'RENATO VILLAFUERTE', shortName:'R. Villafuerte', embark:'2026-03-15', signoff:'2026-09-15', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1088', status:'deployment',
+                      rfaStart:'2026-07-15', rfaEnd:'2027-03-15',
+                      proposed:[
+                          { name:'DANTE PASCUAL', nationality:'Filipino', service:36 },
+                          { name:'EDGAR FLORES',  nationality:'Filipino', service:24 },
+                      ], confirmedSeafarer:'DANTE PASCUAL' }
+            },
+            {
+                rank:'Oiler', isRating: true,
+                onboard:{ name:'ALEX BUENAOBRA',  shortName:'A. Buenaobra', embark:'2026-04-10', signoff:'2026-10-10', contract:'6 months' },
+                rfa: null
+            },
+        ]
+    },
+    {
+        id:'v5', client:'Alpha Tankers',
+        name:'Alpha Horizon', type:'Oil Tanker', flag:'Greece',
+        ranks:[
+            {
+                rank:'Captain',
+                onboard:{ name:'ALEXANDROS STAVROS', shortName:'A. Stavros', embark:'2026-03-20', signoff:'2026-09-20', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1072', status:'deployment',
+                      rfaStart:'2026-07-20', rfaEnd:'2027-03-20',
+                      proposed:[
+                          { name:'VLADIM. PETROV', nationality:'Russian',  service:180 },
+                          { name:'JOSE MIRANDA',   nationality:'Filipino', service:160 },
+                      ], confirmedSeafarer:'VLADIM. PETROV' }
+            },
+            {
+                rank:'Chief Officer',
+                onboard:{ name:'TIANHAO HUANG',    shortName:'T. Huang',     embark:'2026-02-01', signoff:'2026-08-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1068', status:'approval',
+                      rfaStart:'2026-06-01', rfaEnd:'2027-02-01',
+                      proposed:[
+                          { name:'HANS MÜLLER',   nationality:'German', service:94 },
+                          { name:'PETROS PAPPAS', nationality:'Greek',  service:39 },
+                      ], confirmedSeafarer:null }
+            },
+            {
+                rank:'Able Seaman', isRating: true,
+                onboard:{ name:'MARIO LACAP',      shortName:'M. Lacap',     embark:'2026-03-05', signoff:'2026-09-05', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1089', status:'active',
+                      rfaStart:'2026-07-05', rfaEnd:'2027-03-05',
+                      proposed:[], confirmedSeafarer:null }
+            },
+            {
+                rank:'Steward', isRating: true,
+                onboard:{ name:'ROMEO PANGANIBAN', shortName:'R. Panganiban', embark:'2026-04-01', signoff:'2026-10-01', contract:'6 months' },
+                rfa: null
+            },
+        ]
+    },
+
+    // ─── Pacific Logistics ──────────────────────────────────
+    {
+        id:'v6', client:'Pacific Logistics',
+        name:'Pacific Trader', type:'RoRo', flag:'Philippines',
+        ranks:[
+            {
+                rank:'Captain',
+                onboard:{ name:'ERNESTO GARCIA',  shortName:'E. Garcia',    embark:'2026-04-01', signoff:'2026-10-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFX-1074', type:'Extend', status:'active',
+                      rfaStart:'2026-08-01', rfaEnd:'2027-04-01',
+                      proposed:[], confirmedSeafarer:null }
+            },
+            {
+                rank:'Chief Officer',
+                onboard:{ name:'ROBERTO LINO',    shortName:'R. Lino',      embark:'2026-01-10', signoff:'2026-07-10', contract:'6 months' },
+                rfa:{ rfaNo:'RFR-1051', type:'Replace', status:'approval',
+                      rfaStart:'2026-05-10', rfaEnd:'2027-01-10',
+                      proposed:[
+                          { name:'PETROS PAPPAS', nationality:'Greek',  service:39 },
+                          { name:'HANS MÜLLER',   nationality:'German', service:94 },
+                      ], confirmedSeafarer:'PETROS PAPPAS' }
+            },
+            {
+                rank:'Bosun', isRating: true,
+                onboard:{ name:'RAMIR ESPINOSA',  shortName:'R. Espinosa',  embark:'2026-03-01', signoff:'2026-09-01', contract:'6 months' },
+                rfa:{ rfaNo:'RFP-1090', type:'Promote', status:'active',
+                      rfaStart:'2026-07-01', rfaEnd:'2027-03-01',
+                      proposed:[], confirmedSeafarer:null }
+            },
+            {
+                rank:'Ordinary Seaman', isRating: true,
+                onboard:{ name:'NOEL BACALTOS',   shortName:'N. Bacaltos',  embark:'2026-04-01', signoff:'2026-10-01', contract:'6 months' },
+                rfa: null
+            },
+        ]
+    },
+];
+
+// ── Vue app ──────────────────────────────────────────────────
+createApp({
+    data() {
+        return {
+            viewMonths: 12,
+            dayWidth: 3.0,
+            rankColWidth: 240,
+            ganttStartStr: isoDate(addM(TODAY, -3)),
+            includeRatings: false,
+            filterClient: '',
+            filterVessel: '',
+            filterRank:   '',
+            filterRfType: '',
+            ctxMenu: { visible: false, x: 0, y: 0, vessel: null, row: null },
+            modal:   { visible: false, action: '', vessel: null, row: null },
+            extendForm:  { newSignoff: '' },
+            replaceForm: { replacementDate: '', port: '' },
+            promoteForm: { newRank: '', promotionDate: '' },
+            rfaModal: { visible: false, kind: null, data: null, row: null, vessel: null, editStatus: '', confirmDelete: false,
+                        rfcIssued: false, selectedCandidates: [], availFilter: '', showCompare: false, showProposal: false },
+            embarkForm:  { rank: '', embarkDate: '', port: '', contractMonths: 6, contractVariation: 1 },
+            signoffForm: { signoffDate: '', port: '' },
+            todayStr: isoDate(TODAY),
+            rfeRows: [
+                // MV Sea Star (v1) — Chief Officer vacancy, active RFE
+                {
+                    vesselId: 'v1', rfaNo: 'RFE-2011', rank: 'Chief Officer',
+                    dateCreated: '2026-05-01', embarkDate: '2026-07-01',
+                    port: 'Port of Manila', contractMonths: 6, contractVariation: 1,
+                    serviceEnd: '2027-01-01', status: 'active',
+                },
+                // MV Atlantic Pride (v2) — Captain vacancy, active RFE
+                {
+                    vesselId: 'v2', rfaNo: 'RFE-2019', rank: 'Captain',
+                    dateCreated: '2026-05-05', embarkDate: '2026-06-20',
+                    port: 'Port of Rotterdam', contractMonths: 6, contractVariation: 1,
+                    serviceEnd: '2026-12-20', status: 'active',
+                },
+                // Alpha Prime (v4) — Second Engineer vacancy, active RFE
+                {
+                    vesselId: 'v4', rfaNo: 'RFE-2024', rank: 'Second Engineer',
+                    dateCreated: '2026-05-08', embarkDate: '2026-07-15',
+                    port: 'Piraeus', contractMonths: 7, contractVariation: 1,
+                    serviceEnd: '2027-02-15', status: 'active',
+                },
+            ],
+            embarkCandidateCategories: [
+                { label: 'Client Ex-Crew', color: '#10b981' },
+                { label: 'Other Ex-Crew',  color: '#3b82f6' },
+                { label: 'New Candidates', color: '#f97316' },
+            ],
+            allSeafarers: [
+                // Deck Officers
+                { id:101, name:'JUAN DELA CRUZ',      rank:'Chief Officer',    age:34, bmi:23.4, availDate:'2026-05-18', cesStcw:87, cesEnglish:79, nationality:'Filipino', category:'Client Ex-Crew',
+                  services:[{ count:3, months:27, label:'At Rank', rank:'Chief Officer'},{ count:4, months:36, label:'As Officer', rank:'Second Officer'},{ count:2, months:14, label:'Other', rank:'Third Officer'}]},
+                { id:102, name:'HANS MÜLLER',          rank:'Chief Officer',    age:41, bmi:26.1, availDate:'2026-05-22', cesStcw:92, cesEnglish:95, nationality:'German',   category:'Other Ex-Crew',
+                  services:[{ count:5, months:48, label:'At Rank', rank:'Chief Officer'},{ count:3, months:28, label:'As Officer', rank:'Second Officer'},{ count:2, months:18, label:'Other', rank:'Third Officer'}]},
+                { id:103, name:'PETROS PAPPAS',        rank:'Chief Officer',    age:29, bmi:24.8, availDate:'2026-05-10', cesStcw:74, cesEnglish:71, nationality:'Greek',    category:'New Candidates',
+                  services:[{ count:1, months:9,  label:'At Rank', rank:'Chief Officer'},{ count:3, months:22, label:'As Officer', rank:'Second Officer'},{ count:1, months:8,  label:'Other', rank:'Third Officer'}]},
+                { id:201, name:'RODRIGO SANTOS',       rank:'Second Engineer',  age:38, bmi:22.9, availDate:'2026-05-05', cesStcw:85, cesEnglish:76, nationality:'Filipino', category:'Client Ex-Crew',
+                  services:[{ count:4, months:36, label:'At Rank', rank:'Second Engineer'},{ count:3, months:27, label:'As Officer', rank:'Third Engineer'},{ count:1, months:9, label:'Other', rank:'Fourth Engineer'}]},
+                { id:202, name:'MARCO ESPOSITO',       rank:'Second Engineer',  age:44, bmi:27.3, availDate:'2026-05-08', cesStcw:91, cesEnglish:88, nationality:'Italian',  category:'Client Ex-Crew',
+                  services:[{ count:7, months:63, label:'At Rank', rank:'Second Engineer'},{ count:4, months:36, label:'As Officer', rank:'Third Engineer'},{ count:2, months:16, label:'Other', rank:'Fourth Engineer'}]},
+                { id:301, name:'NIKOS PAPADOPOULOS',   rank:'Captain',          age:52, bmi:28.2, availDate:'2026-05-02', cesStcw:96, cesEnglish:91, nationality:'Greek',    category:'Client Ex-Crew',
+                  services:[{ count:12, months:132, label:'At Rank', rank:'Captain'},{ count:6, months:60, label:'As Officer', rank:'Chief Officer'},{ count:4, months:36, label:'Other', rank:'Second Officer'}]},
+                { id:302, name:'VLADIMIR PETROV',      rank:'Captain',          age:49, bmi:26.8, availDate:'2026-05-07', cesStcw:90, cesEnglish:72, nationality:'Russian',  category:'Client Ex-Crew',
+                  services:[{ count:9, months:99,  label:'At Rank', rank:'Captain'},{ count:5, months:54, label:'As Officer', rank:'Chief Officer'},{ count:3, months:27, label:'Other', rank:'Second Officer'}]},
+                { id:303, name:'JOSE MIRANDA',         rank:'Captain',          age:47, bmi:23.5, availDate:'2026-05-05', cesStcw:89, cesEnglish:84, nationality:'Filipino', category:'Other Ex-Crew',
+                  services:[{ count:8, months:88,  label:'At Rank', rank:'Captain'},{ count:5, months:48, label:'As Officer', rank:'Chief Officer'},{ count:3, months:24, label:'Other', rank:'Second Officer'}]},
+                { id:304, name:'ALEXANDROS STAVROS',   rank:'Captain',          age:45, bmi:25.0, availDate:'2026-05-09', cesStcw:83, cesEnglish:78, nationality:'Greek',    category:'New Candidates',
+                  services:[{ count:4, months:44,  label:'At Rank', rank:'Captain'},{ count:6, months:54, label:'As Officer', rank:'Chief Officer'},{ count:4, months:36, label:'Other', rank:'Second Officer'}]},
+                { id:401, name:'FELIX GARCIA',         rank:'Second Officer',   age:31, bmi:22.1, availDate:'2026-05-12', cesStcw:80, cesEnglish:77, nationality:'Filipino', category:'Client Ex-Crew',
+                  services:[{ count:2, months:18, label:'At Rank', rank:'Second Officer'},{ count:3, months:24, label:'As Officer', rank:'Third Officer'},{ count:1, months:8, label:'Other', rank:'Cadet'}]},
+                { id:501, name:'GIORGOS LAMBROS',      rank:'Chief Engineer',   age:48, bmi:27.0, availDate:'2026-05-15', cesStcw:94, cesEnglish:82, nationality:'Greek',    category:'Client Ex-Crew',
+                  services:[{ count:10, months:110, label:'At Rank', rank:'Chief Engineer'},{ count:5, months:48, label:'As Officer', rank:'Second Engineer'},{ count:3, months:27, label:'Other', rank:'Third Engineer'}]},
+                { id:502, name:'DMITRI VOLKOV',        rank:'Chief Engineer',   age:44, bmi:25.6, availDate:'2026-05-20', cesStcw:88, cesEnglish:69, nationality:'Russian',  category:'Other Ex-Crew',
+                  services:[{ count:6, months:66, label:'At Rank', rank:'Chief Engineer'},{ count:4, months:36, label:'As Officer', rank:'Second Engineer'},{ count:2, months:14, label:'Other', rank:'Third Engineer'}]},
+                { id:601, name:'MARIO BIANCHI',        rank:'Bosun',            age:38, bmi:24.3, availDate:'2026-05-08', cesStcw:76, cesEnglish:65, nationality:'Italian',  category:'Other Ex-Crew',
+                  services:[{ count:6, months:54, label:'At Rank', rank:'Bosun'},{ count:4, months:32, label:'As Officer', rank:'AB'},{ count:2, months:14, label:'Other', rank:'OS'}]},
+            ],
+        };
+    },
+
+    computed: {
+        ganttStart()       { return d(this.ganttStartStr); },
+        ganttEnd()         { return addM(this.ganttStart, this.viewMonths); },
+        ganttTotalDays()   { return daysB(this.ganttStart, this.ganttEnd); },
+        todayOffset()      { return Math.max(0, daysB(this.ganttStart, TODAY)); },
+        rfaHorizonOffset() { return Math.max(0, daysB(this.ganttStart, addM(TODAY, 2))); },
+
+        ganttMonths() {
+            const months = [];
+            let cursor = new Date(this.ganttStart);
+            let offsetDays = 0;
+            while (cursor < this.ganttEnd) {
+                const yr = cursor.getFullYear(), mo = cursor.getMonth();
+                const next = new Date(yr, mo + 1, 1);
+                const end  = new Date(Math.min(next, this.ganttEnd));
+                const days = Math.round((end - cursor) / 86400000);
+                months.push({
+                    key: cursor.toISOString(),
+                    label: cursor.toLocaleString('en', { month:'short', year:'2-digit' }),
+                    days, offsetDays,
+                });
+                offsetDays += days;
+                cursor = next;
+            }
+            return months;
+        },
+
+        allClients()    { return [...new Set(allVessels.map(v => v.client))].sort(); },
+        clientVessels() { return allVessels.filter(v => v.client === this.filterClient); },
+        allRanks() {
+            const ranks = new Set();
+            allVessels.forEach(v => v.ranks.forEach(r => {
+                if (this.includeRatings || !r.isRating) ranks.add(r.rank);
+            }));
+            return [...ranks].sort();
+        },
+
+        // Rank hierarchy for Promote — ranks above current seafarer's rank
+        rankHierarchy() {
+            return ['Ordinary Seaman','Able Seaman','Bosun','Third Officer','Third Engineer',
+                    'Second Officer','Second Engineer','Chief Officer','Chief Engineer','Captain'];
+        },
+        higherRanks() {
+            const currentRank = this.modal.row && this.modal.row.rank;
+            if (!currentRank) return this.rankHierarchy;
+            const idx = this.rankHierarchy.indexOf(currentRank);
+            return idx >= 0 ? this.rankHierarchy.slice(idx + 1) : this.rankHierarchy;
+        },
+
+        rfaModalTypeName() {
+            return { rfs:'RFS — Sign Off', rfr:'RFR — Replace', rfe:'RFE — Embark', rfp:'RFP — Promote', rfx:'RFX — Extend' }[this.rfaModal.kind] || 'RFA';
+        },
+        rfaModalHeaderClass() {
+            return { rfs:'bg-rose-700', rfr:'bg-amber-600', rfe:'bg-sky-700', rfp:'bg-purple-700', rfx:'bg-teal-700' }[this.rfaModal.kind] || 'bg-slate-700';
+        },
+        rfaStatusBadgeClass() {
+            return { active:'bg-orange-400/30 text-orange-100', approval:'bg-purple-400/30 text-purple-100', preparation:'bg-yellow-400/30 text-yellow-100', completed:'bg-green-400/30 text-green-100' }[this.rfaModal.editStatus] || 'bg-white/20';
+        },
+        rfaStatusOptions() {
+            return [
+                { value:'active',      label:'Active',      icon:'●', activeClass:'bg-orange-100 border-orange-400 text-orange-700' },
+                { value:'approval',    label:'Approval',    icon:'◈', activeClass:'bg-purple-100 border-purple-400 text-purple-700' },
+                { value:'preparation', label:'Preparation', icon:'◆', activeClass:'bg-yellow-100 border-yellow-400 text-yellow-700' },
+                { value:'completed',   label:'Completed',   icon:'✓', activeClass:'bg-green-100 border-green-400 text-green-700' },
+            ];
+        },
+        rfaModalAvailDefault() {
+            if (!this.rfaModal.data || !this.rfaModal.data.embarkDate) return isoDate(TODAY);
+            return isoDate(addM(d(this.rfaModal.data.embarkDate), -1));
+        },
+        candidateCategories() {
+            return [
+                { label: 'Client Ex-Crew', color: '#10b981' },
+                { label: 'Other Ex-Crew',  color: '#3b82f6' },
+                { label: 'New Candidates', color: '#f97316' },
+            ];
+        },
+        allFlatRows() {
+            const ft = this.filterRfType;
+            return allVessels
+                .filter(v => !this.filterClient || v.client === this.filterClient)
+                .filter(v => !this.filterVessel || v.id === this.filterVessel)
+                .map(v => ({
+                    vesselId: v.id,
+                    client:   v.client,
+                    name:     v.name,
+                    type:     v.type,
+                    flag:     v.flag,
+                    ranks: v.ranks.filter(r =>
+                        (this.includeRatings || !r.isRating) &&
+                        (!this.filterRank || r.rank === this.filterRank) &&
+                        (!ft || this.rowHasRfType(r, ft))
+                    ),
+                    rfeRows: this.rfeRows.filter(r =>
+                        r.vesselId === v.id && (!ft || ft === 'rfe' || ft === 'any')
+                    ),
+                }))
+                .filter(v => v.ranks.length > 0 || v.rfeRows.length > 0);
+        },
+    },
+
+    mounted() {
+        this._docClick = () => { this.ctxMenu.visible = false; };
+        document.addEventListener('click', this._docClick);
+    },
+    unmounted() {
+        document.removeEventListener('click', this._docClick);
+    },
+    methods: {
+        getRfeCandidates(category) {
+            const rank      = (this.rfaModal.row && this.rfaModal.row.rank) || (this.rfaModal.data && this.rfaModal.data.rank);
+            const embark    = this.rfaModal.data && this.rfaModal.data.embarkDate;
+            const availFrom = this.rfaModal.availFilter;
+            return this.allSeafarers.filter(s => {
+                if (s.rank !== rank) return false;
+                if (s.category !== category) return false;
+                if (embark  && s.availDate > embark)    return false;
+                if (availFrom && s.availDate < availFrom) return false;
+                return true;
+            });
+        },
+        clampDays(dateStr) {
+            const days = daysB(this.ganttStart, d(dateStr));
+            return Math.max(0, Math.min(days, this.ganttTotalDays));
+        },
+        barStyle(fromStr, toStr) {
+            const left  = this.clampDays(fromStr) * this.dayWidth;
+            const right = this.clampDays(toStr)   * this.dayWidth;
+            return { left: left + 'px', width: Math.max(right - left, 4) + 'px' };
+        },
+        rfaBarStyle(rfa) {
+            return this.barStyle(rfa.rfaStart || isoDate(TODAY), rfa.rfaEnd);
+        },
+
+        openContextMenu(e, vessel, row) {
+            e.stopPropagation();
+            this.ctxMenu = { visible: true, x: e.clientX, y: e.clientY, vessel, row };
+        },
+        closeContextMenu() {
+            this.ctxMenu.visible = false;
+        },
+
+        openModal(action, vessel, row) {
+            const v = vessel, r = row;
+            this.modal = { visible: true, action, vessel: v, row: r };
+            if (action === 'Embark') {
+                this.embarkForm = { rank: '', embarkDate: '', port: '', contractMonths: 6, contractVariation: 1 };
+            }
+            if (action === 'Extend' && r) {
+                this.extendForm.newSignoff = r.onboard.signoff;
+            }
+            if (action === 'Sign Off' && r) {
+                this.signoffForm = { signoffDate: r.onboard.signoff, port: '' };
+            }
+            if (action === 'Replace' && r) {
+                this.replaceForm = { replacementDate: r.onboard.signoff, port: '' };
+            }
+            if (action === 'Promote') {
+                this.promoteForm = { newRank: '', promotionDate: '' };
+            }
+            this.$nextTick(() => { this.ctxMenu.visible = false; });
+        },
+
+        syncSignoff() {
+            if (this.replaceForm.embarkDate)
+                this.replaceForm.signoffDate = isoDate(addM(d(this.replaceForm.embarkDate), 6));
+        },
+
+        submitModal() {
+            const row = this.modal.row;
+            if (this.modal.action === 'Embark' && this.modal.vessel) {
+                const f = this.embarkForm;
+                const rfaNo = 'RFE-' + (1000 + Math.floor(Math.random() * 9000));
+                const serviceEnd = isoDate(addM(d(f.embarkDate), f.contractMonths));
+                this.rfeRows.push({
+                    vesselId:          this.modal.vessel.vesselId,
+                    rfaNo,
+                    rank:              f.rank,
+                    dateCreated:       isoDate(TODAY),
+                    embarkDate:        f.embarkDate,
+                    port:              f.port,
+                    contractMonths:    f.contractMonths,
+                    contractVariation: f.contractVariation,
+                    serviceEnd,
+                    status: 'active',
+                });
+            }
+            if (this.modal.action === 'Sign Off' && row) {
+                const rfaNo = 'RFS-' + (1000 + Math.floor(Math.random() * 9000));
+                row.rfs = {
+                    rfaNo,
+                    dateCreated:  isoDate(TODAY),
+                    signoffDate:  this.signoffForm.signoffDate,
+                    port:         this.signoffForm.port,
+                    status:       'active',
+                };
+            }
+            if (this.modal.action === 'Extend' && row) {
+                const rfaNo = 'RFX-' + (2000 + Math.floor(Math.random() * 900));
+                row.rfa = {
+                    rfaNo,
+                    type:     'Extend',
+                    status:   'active',
+                    rfaStart: isoDate(TODAY),
+                    rfaEnd:   this.extendForm.newSignoff,
+                    proposed: [],
+                    confirmedSeafarer: null,
+                };
+            }
+            if (this.modal.action === 'Replace' && row) {
+                const rfsNo = 'RFS-' + (1000 + Math.floor(Math.random() * 9000));
+                const rfeNo = 'RFE-' + (1000 + Math.floor(Math.random() * 9000));
+                // RFS: sign-off bar for the departing seafarer (top zone)
+                row.rfs = {
+                    rfaNo:       rfsNo,
+                    dateCreated: isoDate(TODAY),
+                    signoffDate: this.replaceForm.replacementDate,
+                    port:        this.replaceForm.port,
+                    status:      'active',
+                };
+                // rfr_rfe: the paired embark-side thin bar on the same rank row (bottom zone)
+                row.rfr_rfe = {
+                    rfaNo:       rfeNo,
+                    dateCreated: isoDate(TODAY),
+                    embarkDate:  this.replaceForm.replacementDate,
+                    port:        this.replaceForm.port,
+                    status:      'active',
+                };
+                // Standalone RFE row: gets its own Gantt row with the full candidate search pane
+                this.rfeRows.push({
+                    vesselId:          this.modal.vessel.id,
+                    rfaNo:             rfeNo,
+                    rank:              row.rank,
+                    dateCreated:       isoDate(TODAY),
+                    embarkDate:        this.replaceForm.replacementDate,
+                    port:              this.replaceForm.port,
+                    contractMonths:    6,
+                    contractVariation: 1,
+                    serviceEnd:        isoDate(addM(d(this.replaceForm.replacementDate), 6)),
+                    status:            'active',
+                });
+            }
+            if (this.modal.action === 'Promote' && row) {
+                const rfaNo = 'RFP-' + (1000 + Math.floor(Math.random() * 9000));
+                row.rfa = {
+                    rfaNo,
+                    type:     'Promote',
+                    status:   'active',
+                    rfaStart: isoDate(TODAY),
+                    rfaEnd:   this.promoteForm.promotionDate,
+                    newRank:  this.promoteForm.newRank,
+                    proposed: [],
+                    confirmedSeafarer: null,
+                };
+            }
+            this.modal.visible = false;
+        },
+
+        getEmbarkCandidates(category) {
+            const rank = this.embarkForm.rank;
+            const joinDate = this.embarkForm.embarkDate ? new Date(this.embarkForm.embarkDate) : null;
+            const filterFrom = this.embarkForm.availFilter ? new Date(this.embarkForm.availFilter) : null;
+            return this.allSeafarers.filter(s => {
+                if (s.category !== category || s.rank !== rank) return false;
+                if (joinDate) {
+                    const avail = new Date(s.availDate);
+                    if (avail > joinDate) return false;
+                    if (filterFrom && avail < filterFrom) return false;
+                }
+                return true;
+            });
+        },
+
+        rfaVisible(rfa) { return TODAY >= d(rfa.rfaStart); },
+
+        rfaStatusIcon(status) {
+            return { active:'●', approval:'◈', preparation:'◆', completed:'✓' }[status] || '';
+        },
+
+        openRfaModal(rfaData, kind, row, vessel) {
+            const defaultAvail = isoDate(TODAY);
+            this.rfaModal = {
+                visible: true, kind, data: rfaData, row, vessel,
+                editStatus: rfaData.status, confirmDelete: false,
+                rfcIssued: false, selectedCandidates: [],
+                availFilter: defaultAvail,
+                showCompare: false, showProposal: false,
+            };
+        },
+        saveRfa() {
+            if (this.rfaModal.data) this.rfaModal.data.status = this.rfaModal.editStatus;
+            this.rfaModal.visible = false;
+        },
+        deleteRfa() {
+            const { kind, row, data } = this.rfaModal;
+            if (kind === 'rfx' || kind === 'rfp') row.rfa = null;
+            if (kind === 'rfs') { row.rfs = null; }
+            if (kind === 'rfr') { row.rfs = null; row.rfr_rfe = null; }
+            if (kind === 'rfe') {
+                const idx = this.rfeRows.findIndex(r => r.rfaNo === data.rfaNo);
+                if (idx !== -1) this.rfeRows.splice(idx, 1);
+            }
+            this.rfaModal.visible = false;
+        },
+
+        resetGanttStart() { this.ganttStartStr = isoDate(addM(TODAY, -3)); },
+
+        // Returns true if a rank row has an active RF of the given type code
+        rowHasRfType(row, ft) {
+            const rfaActive = row.rfa && row.rfa.type && row.rfa.rfaStart && (TODAY >= d(row.rfa.rfaStart));
+            if (ft === 'any')  return !!(row.rfs || row.rfr_rfe || rfaActive);
+            if (ft === 'rfs')  return !!row.rfs && !row.rfr_rfe;
+            if (ft === 'rfr')  return !!row.rfr_rfe;
+            if (ft === 'rfx')  return !!(rfaActive && row.rfa.type === 'Extend');
+            if (ft === 'rfp')  return !!(rfaActive && row.rfa.type === 'Promote');
+            return false;
+        },
+        rfTypeActiveClass(type) {
+            return {
+                '':    'bg-slate-700 text-white',
+                any:   'bg-slate-500 text-white',
+                rfs:   'bg-rose-500 text-white',
+                rfr:   'bg-amber-500 text-white',
+                rfe:   'bg-sky-500 text-white',
+                rfp:   'bg-purple-500 text-white',
+                rfx:   'bg-teal-500 text-white',
+            }[type] || 'bg-slate-700 text-white';
+        },
+        fmtShort, shortName, isoDate, addM, d,
+    },
+}).mount('#app');
+</script>
+</body>
+</html>

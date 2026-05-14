@@ -7,7 +7,7 @@ This project is a Vue 3 Single Page Application with separate component files fo
 - `components/AdminView.js`
 - `components/RecruitmentView.js`
 - `components/OperationsView.js`
-- `components/RotationPlanView.js`
+- `components/RotationPlanView.js` (Rotation Plan design based on the extracted `nikiMockRotation24` layout)
 
 ## Documentation files
 
